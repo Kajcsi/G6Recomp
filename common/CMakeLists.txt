@@ -1,8 +1,10 @@
 # g6common: code shared by the tools and the runtime (logging, PE image parsing, DEFLATE, entropy,
-# read-only file mapping, and the RPF9 archive reader the analysis tools use).
+# read-only file mapping, the RPF9 archive reader the analysis tools use, and the runtime's
+# stand-in COM objects).
 # The runtime needs the PE parser too: the loader maps guest images, binds their imports,
 # and registers their .pdata/.xdata with Windows.
 add_library(g6common STATIC
+    src/com_stand_in.cpp
     src/entropy.cpp
     src/inflate.cpp
     src/log.cpp

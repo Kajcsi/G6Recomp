@@ -32,6 +32,11 @@ g6_add_test(test_text LABEL nogame
     SOURCES unit/test_text.cpp
     LIBS g6common)
 
+# Stand-in COM objects for interfaces stubbed before they are implemented.
+g6_add_test(test_com LABEL nogame
+    SOURCES unit/test_com_stand_in.cpp
+    LIBS g6common)
+
 # The RPF9 reader (docs/rpf.md) on an archive the test builds from made-up files.
 g6_add_test(test_rpf9 LABEL nogame
     SOURCES unit/test_rpf9.cpp
