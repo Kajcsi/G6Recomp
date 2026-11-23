@@ -6,6 +6,8 @@
 
 #include <fmt/format.h>
 
+#include "g6/text.h"
+
 namespace g6::pe {
 namespace {
 
@@ -49,16 +51,16 @@ private:
 Image Image::load_file(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) {
-        throw FormatError(fmt::format("cannot open {}", path.string()));
+        throw FormatError(fmt::format("cannot open {}", utf8(path.native())));
     }
     const std::streamoff length = stream.tellg();
     if (length < 0 || std::cmp_greater(length, kMaxImageSize)) {
-        throw FormatError(fmt::format("{} is too large or unreadable", path.string()));
+        throw FormatError(fmt::format("{} is too large or unreadable", utf8(path.native())));
     }
     std::vector<uint8_t> file(static_cast<size_t>(length));
     stream.seekg(0);
     if (!stream.read(reinterpret_cast<char*>(file.data()), length)) {
-        throw FormatError(fmt::format("failed to read {}", path.string()));
+        throw FormatError(fmt::format("failed to read {}", utf8(path.native())));
     }
     return parse(file);
 }

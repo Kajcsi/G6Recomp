@@ -10,6 +10,7 @@
 
 #include "g6/kernel/image_loader.h"
 #include "g6/log.h"
+#include "g6/text.h"
 
 namespace g6::loader {
 namespace {
@@ -41,7 +42,7 @@ HMODULE load_support(const std::filesystem::path& folder, const std::wstring& na
     HMODULE module = LoadLibraryExW(path.c_str(), nullptr, 0);
     if (module == nullptr) {
         throw kernel::LoadError(fmt::format("cannot load the loader's support DLL {} (error {})",
-                                            path.string(), GetLastError()));
+                                            utf8(path.native()), GetLastError()));
     }
     return module;
 }
@@ -116,7 +117,7 @@ ThreadSupport::ThreadSupport() {
         indices_[slot] = index;
     }
     LOG_DEBUG(loader, "loaded {} TLS donors of {:#x} bytes from {}", kDonorCount, kDonorCapacity,
-              folder.string());
+              utf8(folder.native()));
     find_executable_slot();
 }
 

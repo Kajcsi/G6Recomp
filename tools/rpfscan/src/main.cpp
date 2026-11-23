@@ -24,6 +24,7 @@
 #include "g6/log.h"
 #include "g6/mapped_file.h"
 #include "g6/rpf9.h"
+#include "g6/text.h"
 
 namespace {
 
@@ -97,10 +98,10 @@ int cmd_info(const fs::path& file) {
     const MappedFile archive(file);
     const std::optional<rpf9::Header> header = rpf9::read_header(archive.bytes());
     if (!header) {
-        LOG_ERROR(rpfscan, "{} is not an RPF9 archive", file.string());
+        LOG_ERROR(rpfscan, "{} is not an RPF9 archive", g6::utf8(file.native()));
         return 1;
     }
-    fmt::print("file             {} ({} bytes)\n", file.filename().string(),
+    fmt::print("file             {} ({} bytes)\n", g6::utf8(file.filename().native()),
                archive.bytes().size());
     fmt::print("table of contents {} bytes; data from {:#x}\n", header->toc_size,
                rpf9::data_start(*header));
@@ -137,7 +138,7 @@ void write_index(const fs::path& path, std::span<const uint8_t> archive, const r
                            head_text(archive.subspan(gap.offset)));
     }
     if (!out) {
-        throw std::runtime_error(fmt::format("can't write {}", path.string()));
+        throw std::runtime_error(fmt::format("can't write {}", g6::utf8(path.native())));
     }
 }
 
@@ -168,7 +169,7 @@ void scan_one(const fs::path& file, unsigned threads, const fs::path& out_dir, T
     fmt::print(
         "{}: {:.2f} GiB, word 24 {}; carved {} streams into {} files "
         "({:.2f} GiB -> {:.2f} GiB); {} gaps, {:.2f} GiB ({:.1f}% of the data area); {:.0f} s\n",
-        file.filename().string(), gib(archive.size()), carve.header.entry_count,
+        g6::utf8(file.filename().native()), gib(archive.size()), carve.header.entry_count,
         carve.streams.size(), carve.entries.size(), gib(compressed), gib(inflated),
         carve.gaps.size(), gib(gap_bytes),
         data == 0 ? 0.0 : 100.0 * static_cast<double>(gap_bytes) / static_cast<double>(data),
@@ -187,7 +188,7 @@ void scan_one(const fs::path& file, unsigned threads, const fs::path& out_dir, T
     totals.word_24 += carve.header.entry_count;
     if (!out_dir.empty()) {
         fs::create_directories(out_dir);
-        write_index(out_dir / (file.stem().string() + ".tsv"), archive, carve);
+        write_index(out_dir / (file.stem().native() + L".tsv"), archive, carve);
     }
 }
 
@@ -221,7 +222,7 @@ int cmd_scan(const fs::path& target, std::span<const std::string_view> flags) {
         try {
             scan_one(file, threads, out_dir, totals);
         } catch (const std::exception& error) {
-            LOG_ERROR(rpfscan, "{}: {}", file.string(), error.what());
+            LOG_ERROR(rpfscan, "{}: {}", g6::utf8(file.native()), error.what());
             ++failed;
         }
     }

@@ -5,6 +5,8 @@
 
 #include <fmt/format.h>
 
+#include "g6/text.h"
+
 namespace g6 {
 
 MappedFile::MappedFile(const std::filesystem::path& path) {
@@ -13,13 +15,14 @@ MappedFile::MappedFile(const std::filesystem::path& path) {
     if (file_ == INVALID_HANDLE_VALUE) {
         file_ = nullptr;
         throw std::runtime_error(
-            fmt::format("can't open {} (error {})", path.string(), GetLastError()));
+            fmt::format("can't open {} (error {})", utf8(path.native()), GetLastError()));
     }
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(file_, &size)) {
         const DWORD error = GetLastError();
         CloseHandle(file_);
-        throw std::runtime_error(fmt::format("can't size {} (error {})", path.string(), error));
+        throw std::runtime_error(
+            fmt::format("can't size {} (error {})", utf8(path.native()), error));
     }
     size_ = static_cast<size_t>(size.QuadPart);
     if (size_ == 0) {
@@ -34,7 +37,8 @@ MappedFile::MappedFile(const std::filesystem::path& path) {
             CloseHandle(mapping_);
         }
         CloseHandle(file_);
-        throw std::runtime_error(fmt::format("can't map {} (error {})", path.string(), error));
+        throw std::runtime_error(
+            fmt::format("can't map {} (error {})", utf8(path.native()), error));
     }
     data_ = static_cast<const uint8_t*>(view);
 }

@@ -10,6 +10,7 @@
 #include <fmt/format.h>
 
 #include "g6/log.h"
+#include "g6/text.h"
 #include "loader_impl.h"
 #include "text.h"
 
@@ -449,7 +450,7 @@ Module::State* Loader::Impl::map_module(const std::filesystem::path& path, std::
                                         uint64_t base, std::vector<Module::State*>& batch) {
     pe::Image image = pe::Image::load_file(path);
     if (image.machine() != pe::kMachineAmd64) {
-        throw kernel::LoadError(fmt::format("{} is not an x86-64 image", path.string()));
+        throw kernel::LoadError(fmt::format("{} is not an x86-64 image", utf8(path.native())));
     }
 
     auto owned = std::make_unique<Module::State>(*this, std::move(name), path, std::move(image));
