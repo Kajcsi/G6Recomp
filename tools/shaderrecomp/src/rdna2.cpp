@@ -30,7 +30,23 @@ constexpr uint32_t kSrcDpp8Fi = 234;
 constexpr uint32_t kSrcDpp16 = 250;
 constexpr uint32_t kSrcLiteral = 255;
 constexpr uint32_t kSgprNull = 125;
-constexpr uint32_t kInvTwoPiBits = 0x3E22F983; // 1/(2*pi) as a float
+constexpr uint32_t kInvTwoPiBits = 0x3E22F983;              // 1/(2*pi) as a float
+constexpr uint64_t kInvTwoPiBits64 = 0x3FC45F306DC9C882ULL; // 1/(2*pi) as a double
+
+// Source codes that read hardware state; 253 (SCC) has an operand kind of its own.
+std::optional<std::string_view> hardware_source_name(uint32_t code) {
+    switch (code) {
+    case 235: return "src_shared_base";
+    case 236: return "src_shared_limit";
+    case 237: return "src_private_base";
+    case 238: return "src_private_limit";
+    case 239: return "src_pops_exiting_wave_id";
+    case 251: return "src_vccz";
+    case 252: return "src_execz";
+    case 254: return "src_lds_direct";
+    default: return std::nullopt;
+    }
+}
 
 constexpr uint32_t field(uint32_t word, unsigned low, unsigned count) {
     return (word >> low) & ((1U << count) - 1);
@@ -792,7 +808,10 @@ std::string operand_text(const Operand& operand) {
                    ? std::string("0.15915494")
                    : fmt::format("{}", std::bit_cast<float>(operand.value));
     case OperandKind::kLiteral: return fmt::format("{:#x}", operand.value);
-    case OperandKind::kOther: return fmt::format("src{}", operand.value);
+    case OperandKind::kOther: {
+        const std::optional<std::string_view> name = hardware_source_name(operand.value);
+        return name ? std::string(*name) : fmt::format("src{}", operand.value);
+    }
     case OperandKind::kAttribute:
         return fmt::format("attr{}.{}{}", operand.value & 0x3F, "xyzw"[(operand.value >> 6) & 3],
                            (operand.value & 0x100) != 0 ? " high" : "");
@@ -805,6 +824,13 @@ std::string operand_text(const Operand& operand) {
         }
     }
     return "?";
+}
+
+uint64_t inline_float64(uint32_t float_bits) {
+    if (float_bits == kInvTwoPiBits) {
+        return kInvTwoPiBits64;
+    }
+    return std::bit_cast<uint64_t>(static_cast<double>(std::bit_cast<float>(float_bits)));
 }
 
 std::string text(const Instruction& insn) {

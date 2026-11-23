@@ -71,9 +71,11 @@ enum class OperandKind : uint8_t {
     kScc,
     kNull,
     kInlineInt,   // value: the integer, two's complement (-16 to 64)
-    kInlineFloat, // value: the float's bits (0.5, 1, 2, 4, their negatives, 1/(2*pi))
+    kInlineFloat, // value: the float's bits (0.5, 1, 2, 4, their negatives, 1/(2*pi));
+                  // a 64-bit operand takes inline_float64(value) instead
     kLiteral,     // value: the trailing 32-bit literal
-    kOther,       // value: the operand code, not modelled yet
+    kOther,       // value: the operand code, not modelled yet; operand_text names the
+                  // hardware sources (src_shared_base, src_vccz, src_lds_direct, ...)
     kAttribute,   // value: a VOP3 interpolation's src0 field (see interp_attribute)
     kInterpParam, // value: which parameter v_interp_mov_f32 reads: 0 P10, 1 P20, 2 P0
 };
@@ -176,6 +178,10 @@ std::string mnemonic(const Instruction& instruction);
 bool named(const Instruction& instruction);
 
 std::string operand_text(const Operand& operand);
+// The bits of an inline float constant read as a 64-bit operand. The constants that are powers
+// of two widen exactly, but 1/(2*pi) has a double encoding of its own, more precise than the
+// widened float.
+uint64_t inline_float64(uint32_t float_bits);
 // One line of assembly-like text, for looking at programs on the user's own machine.
 std::string text(const Instruction& instruction);
 

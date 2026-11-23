@@ -69,6 +69,19 @@ TEST_CASE("scalar instructions decode with their literals and inline constants")
     CHECK_EQ(r::operand_text(add.src[0]), std::string("-1"));
     CHECK_EQ(r::operand_text(add.src[1]), std::string("0.5"));
 
+    // s_add_u32 s0, src_shared_base, src_lds_direct: sources that read hardware state.
+    const r::Instruction hardware = one({0x8000FEEB});
+    REQUIRE(hardware.src_count == 2);
+    CHECK_EQ(r::operand_text(hardware.src[0]), std::string("src_shared_base"));
+    CHECK_EQ(r::operand_text(hardware.src[1]), std::string("src_lds_direct"));
+    CHECK_EQ(r::operand_text(r::Operand{r::OperandKind::kOther, 251}), std::string("src_vccz"));
+    CHECK_EQ(r::operand_text(r::Operand{r::OperandKind::kOther, 233}), std::string("src233"));
+
+    // Read as doubles, the powers of two widen exactly and 1/(2*pi) has its own encoding.
+    CHECK_EQ(r::inline_float64(0x3F000000), uint64_t{0x3FE0000000000000});
+    CHECK_EQ(r::inline_float64(0xC0800000), uint64_t{0xC010000000000000});
+    CHECK_EQ(r::inline_float64(0x3E22F983), uint64_t{0x3FC45F306DC9C882});
+
     // s_setreg_imm32_b32 hwreg, 3: SOPK that always carries a literal.
     const r::Instruction setreg = one({0xBA800801, 0x00000003});
     CHECK(setreg.encoding == r::Encoding::kSopk);
