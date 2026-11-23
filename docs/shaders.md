@@ -484,7 +484,14 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       read v3 themselves and 108 that call the fetch subroutine and read no VGPR before the
       call. There the 3 must be for the subroutine, presumably for an instance-rate input.
     * It is 0 in all 195 ES programs and 1 in all 9,282 mesh programs.
-    * GS programs read only v0 and v1. Where their own count sits hasn't been found.
+    * GS programs read only v0 and v1. Where their own count sits hasn't been settled. The GS
+      stage record's word at 0x15C is the candidate: it is 1 in all 195 GS programs and 0 in
+      every ES, VS, and mesh program (pixel images keep their input table there, and compute
+      images their code). AMD's open drivers set `GS_VGPR_COMP_CNT` to 1 for triangle input,
+      which loads v0 and v1, and every GS here takes triangles and reads exactly those two.
+      With one value in every program that is a fit, not proof, so the checks below leave GS
+      VGPRs out. The driver's pipeline cache can't settle it either: none of its pipelines has
+      a geometry stage.
 * **Registers at wave start.** **Checked here (decode):** `shaderrecomp`'s register model
   (`regs.h`, written from AMD's public RDNA 2 reference) lists the registers each instruction
   reads and writes. From that it finds the registers a program reads before any path writes
