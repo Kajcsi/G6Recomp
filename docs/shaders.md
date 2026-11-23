@@ -373,8 +373,16 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       * Of the 59,191 distinct attribute, channel and half each program's f16 interpolations
         read, 59,185 land on a component the signature marks read and none on an unread one.
         The other 6 are in 6 programs that read slot 6 of an attribute whose registers fill
-        slots 0 to 5 (byte 1's x to w, byte 5's x and y). What sits there isn't worked out.
-        The f16 interpolations read only records with bit 3, 24 of them unpacked.
+        slots 0 to 5 (byte 1's x to w, byte 5's x and y). The f16 interpolations read only
+        records with bit 3, 24 of them unpacked.
+      * The 6 are one shader family. In each, the previous attribute's byte 1 register holds
+        two elements, xyz and a separate w, and nothing reads that attribute's slot 3, where
+        the w would go. That w is the only read f16 element no slot holds, so slot 6 most
+        likely holds it. If an element has to start on a channel's low half, the w can't sit
+        at slot 3, and slot 6 is the first whole free channel in record order. Elsewhere a
+        second element starts on a low half: in the 12 unnamed-partner programs whose byte 1
+        register holds an xy and a zw element, both read, the zw sits at slots 2 and 3 and the
+        partner at 4. With one family, this stays a likely reading, not a rule.
     * xcl reads byte 6 as the register again. Here it differs from byte 1 in 22,168 records,
       usually by one to five lower, so don't rely on it.
   * Leonida reports what the flag bits mean: bit 0 marks a position the code reads with
