@@ -239,6 +239,15 @@ TEST_CASE("D3D12ConfigureVirtualMemoryX is HLE, before the device") {
     CHECK(resolution.address != nullptr);
 }
 
+TEST_CASE("the app-state notifications are the host's") {
+    // The Game Runtime's start-up registers for them.
+    ImportRegistry policy = default_game_policy();
+    const Resolution resolution =
+        policy.resolve("api-ms-win-core-psm-appnotify-l1-1-0.dll",
+                       Symbol::by_name("RegisterAppStateChangeNotification"));
+    CHECK(resolution.binding == Binding::Forward);
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",

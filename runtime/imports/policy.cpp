@@ -199,6 +199,7 @@ void add_core(ImportRegistry& imports) {
         "api-ms-win-core-processthreads-*",
         "api-ms-win-core-processtopology-*",
         "api-ms-win-core-profile-*",
+        "api-ms-win-core-psm-appnotify-*",
         "api-ms-win-core-rtlsupport-*",
         "api-ms-win-core-string-*",
         "api-ms-win-core-synch-*",
