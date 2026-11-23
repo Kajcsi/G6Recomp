@@ -212,6 +212,56 @@ answers each one:
 * Catch continuations were reported as unreached code until the re-walk from taken addresses.
 * One TLS array load was followed past the old 8-instruction window. The window is now 16.
 
+## Results on the 1.0.2.1 executable
+
+These are **checked here**, on `game_scarlett_master.exe`:
+
+* **Module**: 598,282 base relocations, all 64-bit, so the loader can map the executable
+  elsewhere when its preferred base is taken. It has a TLS directory with two callbacks. Its load
+  configuration has no Control Flow Guard (no CFG function table and no EH continuation table),
+  but it does have the guard check and dispatch pointers and a stack cookie.
+* **No system instructions** and **no timing instructions**, by walk or sweep.
+* **`cpuid` and `xgetbv`**: 9 `cpuid` sites and 2 `xgetbv` sites, all trapped by the loader.
+* **Traps**: 8,499 `int3` instructions on walked paths and 3 `int 29h` fail-fast sites. Some of
+  the `int3`s only pad the end of a call that never returns. The others are the console build's
+  asserts, which the runner's `--skip-int3` steps over ("Soft asserts" in
+  [execution-model.md](execution-model.md)); how many of each there are hasn't been counted.
+* **TEB**: no `fs:` accesses. `gs:` is read at StackLimit once, at Self once (to read StackBase
+  through it), and at ThreadLocalStoragePointer 53,244 times. All three fields sit at the same
+  offsets on desktop Windows.
+* **TLS**: 34,454 accesses index the TLS array with the executable's TLS index, and 18,742 use a
+  fixed slot. The fixed slots are what `/GA` produces for an executable, which assumes its TLS
+  index is 0. The runner links `g6exetls`, so the executable gets index 0 and both forms find
+  the same slot. 48 loads of the TLS array weren't followed to a slot, and haven't been looked
+  at yet.
+* **Code as data**: no code reads and no code writes. 133 taken addresses (99 distinct) point
+  inside a function. There were 1,013 at first. 587 of them were the entries of resolved switch
+  tables of absolute addresses, among them a bytecode interpreter's threaded-code table, and are
+  now left out. Most of the rest were the starts of leaf functions whose address only a `lea`
+  takes, which function discovery now seeds from (source 5 in
+  [function-discovery.md](function-discovery.md#sources-of-truth-strongest-first)). Of the 99 targets
+  left, 96 follow `int3` padding inside chains of small thunks that jump from one to the next.
+  A leaf's range runs to the end of the furthest code it jumps to, so a thunk placed in between
+  stays inside it. The code walk doesn't see these entries, so a patch window over one needs a
+  hand check.
+* **Features**: every baseline extension, the ones the code uses as if always present, is in
+  the runner's required list, except PREFETCHW, which older Intel CPUs run as a no-op ("The
+  host CPU" in [execution-model.md](execution-model.md)). Five extensions Zen 2 has but
+  some hosts lack also appear: ADX (2,611 sites), CLWB (8), SSE4a (19), CLZERO (10), and MONITORX
+  (4). Whether a feature check guards them isn't known yet. The last three are AMD-only, so an
+  Intel host would fault at any of them that runs. The fixes are listed under "CPU features" in
+  [execution-model.md](execution-model.md).
+* **C++ exception handlers**: 596 functions have a handler: 162 FH3, 353 FH4, 135 through a GS
+  wrapper, 77 under a stack cookie check alone, and 4 others. Every table reads. Of the 59
+  functions with a catch, 22 have a catch whose continuation no source names, since the
+  executable has no EH continuation table and FH4's records name only 51. Mid-function hooks in
+  those 22 need a hand check.
+* **Coverage**: 438,049 functions and 23.4 million instructions walked. 86,496 bytes of `.pdata`
+  code aren't reached by the walk, and the sweep decodes 22,532 instructions there without
+  anything to flag. There are no decode or directory errors (see
+  [function-discovery.md](function-discovery.md#results-so-far-build-1021) for how the last 23
+  went away).
+
 ## What this means for the hook engine
 
 The patch-window rule in [hooks.md](hooks.md) counts jumps from the code walk, switch-table
