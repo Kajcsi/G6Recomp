@@ -91,6 +91,26 @@ BOOL XMemGetWorkingSetStatistics(uint64_t attributes, XMemWorkingSetStatistics* 
 // budget to move between, so it succeeds and changes nothing.
 BOOL XMemTransferMemory(uint32_t direction, size_t size);
 
+// The console's VirtualAlloc with an attribute word, as the executable calls it (docs/boot.md):
+// `address`, `size`, `type`, `attributes`, then `protection`. What the attribute word means is
+// unknown (the executable passes 3, 7, and 0x21); it is logged and ignored. The page-size bits
+// of `type` give the alignment: MEM_4MB_PAGES 4 MiB, MEM_64K_PAGES 64 KiB, MEM_LARGE_PAGES alone
+// 2 MiB. A reserve with MEM_PHYSICAL and no MEM_COMMIT is a range for physical pages, which
+// memory_tracker keeps as a placeholder; with MEM_REPLACE_PLACEHOLDER it is carved out of an
+// earlier placeholder. MEM_RESERVE_PLACEHOLDER reserves a placeholder. Everything else is
+// ordinary memory, allocated in place when it replaces part of a placeholder. The PAGE_GRAPHICS_*
+// bits of `protection` go to memory_tracker, not to the host page.
+void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attributes,
+                       uint32_t protection);
+
+// The default allocator behind the hooks a title can install (the public GDK's
+// XMemSetAllocationHooks): the same as XMemAlloc and XMemFree, since we install none.
+void* XMemAllocDefault(size_t size, uint64_t attributes);
+void XMemFreeDefault(void* address, uint64_t attributes);
+
+// Whether the development kit's extra tools memory is there. A retail console has none.
+BOOL XMemIsToolsMemAvailable();
+
 // Binds xmem.dll's imports to the functions above.
 void register_xmem(loader::ImportRegistry& imports);
 

@@ -1,6 +1,7 @@
-// xmem.dll (docs/side-dlls.md, "xmem"). Heap memory only, for now: the graphics and physical
-// memory types wait for memory_tracker, and fail honestly until then rather than handing out
-// CPU memory the GPU can't see. The two queries answer from the host's own view of memory.
+// xmem.dll (docs/side-dlls.md, "xmem"). XMemAlloc gives heap memory only, for now: its graphics
+// and physical memory types fail honestly rather than hand out CPU memory the GPU can't see.
+// XMemVirtualAlloc goes through memory_tracker. The two queries answer from the host's own view
+// of memory.
 
 #include "g6/imports/xmem.h"
 
@@ -14,6 +15,7 @@
 // After windows.h.
 #include <psapi.h>
 
+#include "g6/gpu/memory_tracker.h"
 #include "g6/loader/import_registry.h"
 #include "g6/log.h"
 
@@ -53,6 +55,7 @@ bool first_report(uint32_t memory_type) {
 }
 
 std::atomic<bool> g_reported_foreign_free{false};
+std::atomic<bool> g_reported_unknown_type{false};
 
 } // namespace
 
@@ -159,6 +162,59 @@ BOOL XMemTransferMemory(uint32_t direction, size_t size) {
     return TRUE;
 }
 
+void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attributes,
+                       uint32_t protection) {
+    constexpr uint32_t kPageSizes = MEM_LARGE_PAGES | MEM_PHYSICAL | MEM_4MB_PAGES;
+    constexpr uint32_t kKnown = MEM_COMMIT | MEM_RESERVE | MEM_REPLACE_PLACEHOLDER |
+                                MEM_RESERVE_PLACEHOLDER | MEM_TOP_DOWN | kPageSizes;
+    if ((type & ~kKnown) != 0 && !g_reported_unknown_type.exchange(true)) {
+        LOG_WARN(xmem,
+                 "XMemVirtualAlloc: unknown allocation type bits {:#x} ignored (reported once)",
+                 type & ~kKnown);
+    }
+    const bool commit = (type & MEM_COMMIT) != 0;
+    const gpu::Protection split = gpu::split_protection(protection, commit);
+    size_t alignment = 64 * 1024;
+    if ((type & MEM_4MB_PAGES) != 0) {
+        alignment = 4 * 1024 * 1024;
+    } else if ((type & MEM_64K_PAGES) == MEM_LARGE_PAGES) {
+        alignment = 2 * 1024 * 1024;
+    }
+
+    gpu::MemoryTracker& tracker = gpu::MemoryTracker::instance();
+    void* result = nullptr;
+    if ((type & MEM_RESERVE_PLACEHOLDER) != 0) {
+        result = tracker.reserve_placeholder(address, size, alignment, false, split.graphics);
+    } else if ((type & MEM_PHYSICAL) != 0 && !commit) {
+        result = (type & MEM_REPLACE_PLACEHOLDER) != 0
+                     ? tracker.carve_physical(address, size, split.graphics)
+                     : tracker.reserve_placeholder(address, size, alignment, true, split.graphics);
+    } else {
+        result = tracker.allocate(address, size, type & (MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN),
+                                  split.host, alignment, split.graphics);
+    }
+    if (result == nullptr) {
+        LOG_WARN(xmem, "XMemVirtualAlloc({}, {:#x}, {:#x}, {:#x}, {:#x}) failed (error {})",
+                 address, size, type, attributes, protection, GetLastError());
+    } else {
+        LOG_DEBUG(xmem, "XMemVirtualAlloc({}, {:#x}, {:#x}, {:#x}, {:#x}) -> {}", address, size,
+                  type, attributes, protection, result);
+    }
+    return result;
+}
+
+void* XMemAllocDefault(size_t size, uint64_t attributes) {
+    return XMemAlloc(size, attributes);
+}
+
+void XMemFreeDefault(void* address, uint64_t attributes) {
+    XMemFree(address, attributes);
+}
+
+BOOL XMemIsToolsMemAvailable() {
+    return FALSE;
+}
+
 void register_xmem(loader::ImportRegistry& imports) {
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemAlloc"),
                 reinterpret_cast<const void*>(&XMemAlloc));
@@ -170,6 +226,14 @@ void register_xmem(loader::ImportRegistry& imports) {
                 reinterpret_cast<const void*>(&XMemGetWorkingSetStatistics));
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemTransferMemory"),
                 reinterpret_cast<const void*>(&XMemTransferMemory));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemVirtualAlloc"),
+                reinterpret_cast<const void*>(&XMemVirtualAlloc));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemAllocDefault"),
+                reinterpret_cast<const void*>(&XMemAllocDefault));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemFreeDefault"),
+                reinterpret_cast<const void*>(&XMemFreeDefault));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemIsToolsMemAvailable"),
+                reinterpret_cast<const void*>(&XMemIsToolsMemAvailable));
 }
 
 } // namespace g6::imports::xmem

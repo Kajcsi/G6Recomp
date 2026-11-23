@@ -344,6 +344,11 @@ g6_add_test(test_imports LABEL nogame
             imports/test_registry.cpp imports/test_xmem.cpp
     LIBS g6imports g6gdk runtimeobject)
 
+# memory_tracker (runtime/gpu): placeholders, physical ranges, and aligned allocations.
+g6_add_test(test_memory_tracker LABEL nogame
+    SOURCES gpu/test_memory_tracker.cpp
+    LIBS g6gpu)
+
 g6_add_test(test_gdk LABEL nogame
     SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp gdk/test_game_runtime.cpp gdk/test_user.cpp
             gdk/test_game_save.cpp

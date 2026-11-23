@@ -219,6 +219,18 @@ TEST_CASE("the registry reads the GDK thunk makes, and the xmem queries, are HLE
     }
 }
 
+TEST_CASE("the xmem functions the executable calls first are HLE") {
+    ImportRegistry policy = default_game_policy();
+    // docs/boot.md, "Our runs": each failure among these is a fatal assert.
+    for (const char* name :
+         {"XMemVirtualAlloc", "XMemAllocDefault", "XMemFreeDefault", "XMemIsToolsMemAvailable"}) {
+        INFO(name);
+        const Resolution resolution = policy.resolve("xmem.dll", Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Hle);
+        CHECK(resolution.address != nullptr);
+    }
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",
