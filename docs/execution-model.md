@@ -94,9 +94,9 @@ The loader (`g6::loader::Loader`):
 4. **Sets up static TLS** (see below).
 5. **Sets the security cookie** in the load config to a random value with the top 16 bits
    clear, as the Windows loader does, and **leaves CFG alone**. The guest's check and dispatch
-   pointers keep their default no-op routines. Still open: the test host isn't built with CFG
-   enforced; if `g6recomp.exe` is, host code calling guest callbacks may need the guest's code
-   marked as valid call targets.
+   pointers keep their default no-op routines. Still open: neither the tests nor `g6recomp.exe`
+   are built with CFG enforced; if the runner ever is, host code calling guest callbacks may need
+   the guest's code marked as valid call targets.
 6. **Initializes the new modules in dependency order**: TLS callbacks, then `DllMain`, for each
    DLL; the executable gets its TLS callbacks only. If a `DllMain` fails, that DLL and the ones
    this load already initialized get `PROCESS_DETACH` in reverse, and the whole load is unmapped.
@@ -548,6 +548,39 @@ Phases 1, 2, and 4 don't need the main executable.
      `test_command_line`, which compares the parser with the host CRT line by line, and
      `test_crt_args`, where an original `/MD` executable's `main` gets the guest's arguments and
      a DLL it imports sees the line while the loader attaches it.
+   * **The runner.** `g6recomp.exe` (`app/g6recomp`, `g6/app/runner.h`) starts the guest
+     process. It installs the crash report, then:
+     1. Finds the executable: `--exe`, a path or a file name in the install, or else the main
+        executable of the known build the install holds. CMake writes each build's ID,
+        executable name, and SHA-256 from `known_builds.toml` into a header. An executable named
+        as a known build's must have that build's hash; a build with none recorded runs
+        unverified, with a warning that gives the hash. Any other executable runs as no build
+        and needs `--data-dir`.
+     2. Mounts the drives ([io.md](io.md)): the install read-only at `G:`, and `<data>\temp` at
+        `T:`, where `<data>` is `--data-dir` or `%LOCALAPPDATA%\G6Recomp\<build ID>`.
+     3. Sets the guest's command line: the executable's path as its program name, then the
+        arguments after `--`.
+     4. Starts the guest's exit tables, loads the executable under `default_game_policy()` with
+        the install as the search path, and runs its entry point.
+
+     The host process ends with the guest's exit code: through the guest's `exit`, or with the
+     entry point's return value, as Windows ends a process whose main thread returns from its
+     entry point. The loader is never destroyed, since other guest threads may still run; the
+     guest's modules stay mapped while the process ends, as Windows leaves a process's images.
+     The runner links `g6exetls`, so the executable's static TLS gets index 0. It exits with 2
+     for a command line it can't use and 1 when the guest can't be started, and logs why.
+
+     Open: the guest's `GetModuleFileName` reports the host path of each guest module, so the
+     program name is a host path too, and the guest's own file functions can't open it, since
+     only mounted drives exist. On the console it would be a `G:` path.
+
+     Tested by `test_runner`: the argument parsing, the hash, and the build identification in
+     process, and `g6recomp.exe` in a child process on an original executable in a folder that
+     stands in for an install. Its `main` gets its arguments, starts in `G:\`, reads a file there
+     by a relative path, can't write to `G:`, and writes to `T:`, which lands in the data
+     directory's temp folder. Its C++ runtime is linked in: the host's `vcruntime140.dll`
+     imports `kernel32.dll`, which the game's policy stubs (its `DllMain` fails on
+     `InitializeCriticalSectionEx`), while the console's imports API sets.
 
 ## Milestones
 

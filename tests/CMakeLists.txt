@@ -379,6 +379,32 @@ target_include_directories(test_crt_args PRIVATE fixtures/args_guest)
 target_compile_definitions(test_crt_args PRIVATE G6_ARGS_GUEST_DIR="${G6_ARGS_GUEST_DIR}")
 add_dependencies(test_crt_args args_guest)
 
+# ---- The runner ----
+
+# The guest executable for test_runner: original and onecore_apiset, with the universal CRT as
+# DLL imports, as the game has it. The game's C++ runtime is the console's, which imports API sets;
+# the host's vcruntime140.dll imports kernel32.dll, which the game's import policy stubs, so the
+# fixture links the C++ runtime statically instead (/MT with the UCRT's import library). The test
+# copies it into a folder that stands in for an install.
+set(G6_RUNNER_GUEST_DIR ${CMAKE_BINARY_DIR}/runner_guest)
+add_executable(runner_guest fixtures/runner_guest/runner_guest.c)
+g6_target_defaults(runner_guest)
+set_target_properties(runner_guest PROPERTIES
+    MSVC_RUNTIME_LIBRARY MultiThreaded
+    RUNTIME_OUTPUT_DIRECTORY ${G6_RUNNER_GUEST_DIR})
+target_link_options(runner_guest PRIVATE /INCREMENTAL:NO /NODEFAULTLIB:kernel32.lib
+    /NODEFAULTLIB:libucrt.lib /SUBSYSTEM:CONSOLE)
+target_link_libraries(runner_guest PRIVATE ucrt onecore_apiset)
+
+g6_add_test(test_runner LABEL nogame
+    SOURCES app/test_runner.cpp
+    LIBS g6runner)
+target_include_directories(test_runner PRIVATE fixtures/runner_guest)
+target_compile_definitions(test_runner PRIVATE
+    G6_RUNNER_GUEST_DIR="${G6_RUNNER_GUEST_DIR}"
+    G6_RUNNER_EXE="$<TARGET_FILE:g6recomp>")
+add_dependencies(test_runner runner_guest g6recomp)
+
 g6_add_test(test_game_files LABEL game
     SOURCES game/test_game_files.cpp
     LIBS x64recomp_core)

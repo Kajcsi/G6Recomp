@@ -28,6 +28,7 @@ add_subdirectory(tools/x64recomp)
 add_subdirectory(tools/shaderrecomp)
 add_subdirectory(tools/rpfscan)
 add_subdirectory(runtime)
+add_subdirectory(app)
 
 if(G6_BUILD_TESTS)
     enable_testing()

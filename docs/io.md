@@ -5,9 +5,10 @@ per-user data directory, and the HLE file functions in `runtime/imports` go thro
 
 **Status: implemented and tested (2026-11-22).** `runtime/io` holds the mounts and the path
 rules; the default policy binds the functions below as HLE. Before this, every import that took a
-path was a stub ([side-dlls.md](side-dlls.md), "Default import policy"). Nothing mounts the
-drives yet outside the tests: the launcher does that once it starts the main executable (M1
-phase 5).
+path was a stub ([side-dlls.md](side-dlls.md), "Default import policy"). The runner,
+`g6recomp.exe`, mounts the drives before it loads the main executable
+([execution-model.md](execution-model.md), phase 5, "The runner"); `test_runner` checks them
+from an original guest executable.
 
 ## Why
 
