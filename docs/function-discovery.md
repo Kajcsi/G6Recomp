@@ -76,10 +76,17 @@ in the byte table.
 **Bounds.** A table is only trusted once the analyzer knows how many entries it has. It gets the
 bound from the guard on the path: a compare of the index against a constant, followed by the
 branch that skips the dispatch when the index is too large. That is an unsigned "above" or
-"above or equal" check, or, for a single-case guard, an equality check. The index may be derived
-from the compared value by a copy, sign extension, adding a non-negative constant, masking with
-`and`, or shifting right. The bound is carried through each of these in program order. A mask
-with a small constant bounds the index on its own.
+"above or equal" check, or, for a single-case guard, an equality check. A signed branch, or an
+equality test that went the unequal way, may sit between the compare and that branch; it is
+passed over as long as nothing changes the flags. The index may be derived from the compared
+value by a copy, sign extension, adding a non-negative constant, masking with `and`, or shifting
+right. The bound is carried through each of these in program order. A mask with a small
+constant bounds the index on its own.
+
+The compare may also be on the other side of a register copy. `mov r15d, edx` followed by
+`cmp edx, 8` bounds r15, and so does `mov edx, r15d` followed by `cmp edx, 8`, as long as
+neither register is written between the copy and the compare. The copy must be at least 32
+bits wide, so the compare sees the whole value.
 
 A register written before the analyzer's window, or by a call (for a volatile register), is
 unknown. One case is accepted anyway: in the image-relative form, the image base is often
@@ -94,6 +101,15 @@ be another function's entry. A bounded table with even one bad entry is rejected
 truncated. An unbounded table, one whose guard isn't on the path, is read entry by entry until
 the first invalid one, up to 4096 entries. That is a fallback, so the count is reported
 separately. A table whose base is only an assumption is never read unbounded.
+
+An unbounded read also stops earlier in two cases. If the index was zero-extended from a byte
+on the way, it can't pass 255, adjusted by any later steps. And it stops where another known
+table begins, since compilers place a function's tables back to back, and the entries of the
+next table often land inside the same function. When the walk of a function finds an unbounded
+table that ran into a table it found later, the function is walked again with every table
+known. The visitor sees only the walk that stands, so code reached through the bad entries
+never adds `cpuid` sites. Discovery hands the table addresses it found to later walks (the
+pre-flight scan and the C++ exception map), which then stop at once.
 
 **What isn't a table.** An indirect jump through a register loaded from a non-indexed memory
 slot, such as a field or a vtable slot, is an *indirect tail call*. Code emission treats it like
@@ -131,3 +147,12 @@ and each is a genuinely dynamic jump. Every DLL has one in its CFG dispatch stub
 helpers that jump to an address passed in an argument register, such as the exception-handling
 continuation helpers, plus the delay-load helper's final jump. The same checks run on the main
 executable through `ctest --preset windows-debug -L "^game$"` and `x64recomp functions <exe>`.
+
+The main executable has 403,884 functions: 298,742 from `.pdata` (with 515 chained fragments)
+and 105,142 leaves, 231 of them import thunks. 3,401 jump tables resolve with 39,836 entries;
+234 of them are unbounded, and 14 more are rejected. 7,550 indirect jumps are tail calls through
+memory, and 171 stay unresolved. The walk has no decode, unwind, or directory errors. Before
+unbounded reads stopped at a byte index's range and at the next table, the scan found 23 decode
+errors, all in code reached through entries read past the end of a table: one from a bytecode
+interpreter's 256-entry opcode table, the rest from tables read into the next table of the same
+function.

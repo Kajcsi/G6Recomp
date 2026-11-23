@@ -80,6 +80,10 @@ struct DiscoveryResult {
     // walks decode count, so bytes in data that happen to look like one never do.
     std::vector<uint32_t> cpuid_sites;
     std::vector<uint32_t> xgetbv_sites;
+    // Every jump table and byte index table the functions use, sorted. Further walks pass them
+    // to CodeWalker::set_table_starts, so an unbounded table stops where the next one begins
+    // without a second walk.
+    std::vector<uint32_t> table_starts;
     DiscoveryStats stats;
 
     const DiscoveredFunction* find(uint32_t start) const;

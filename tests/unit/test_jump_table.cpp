@@ -78,9 +78,11 @@ struct Switch {
         }
     }
 
-    WalkResult walk() const {
+    // `table_starts`: tables known from elsewhere, as discovery passes them on.
+    WalkResult walk(std::vector<uint32_t> table_starts = {}) const {
         const g6::pe::Image image = builder.image();
-        const CodeWalker walker(image);
+        CodeWalker walker(image);
+        walker.set_table_starts(std::move(table_starts));
         const uint32_t entry = kText;
         const Range range{kText, kFunctionEnd};
         return walker.walk(std::span<const uint32_t>(&entry, 1), std::span<const Range>(&range, 1),
@@ -153,6 +155,58 @@ TEST_CASE("jump table: table-relative signed entries, index copied after the che
     REQUIRE(walk.jump_tables.size() == 1);
     CHECK(walk.jump_tables[0].bounded);
     CHECK(walk.jump_tables[0].targets == cases({2, 0, 1}));
+}
+
+TEST_CASE("jump table: index copied before the check on its source") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x89, 0xC8});                    // mov eax, ecx
+    code.bytes({0x83, 0xF9, 0x03});              // cmp ecx, 3
+    code.bytes({0x0F, 0x87}).relative(kDefault); // ja default
+    lea_image_base(code, {0x48, 0x8D, 0x15});    // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2, 3})); // the fifth entry is past the bound
+}
+
+TEST_CASE("jump table: the check on a copy of the index") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x89, 0xC1});                    // mov ecx, eax
+    code.bytes({0x83, 0xF9, 0x02});              // cmp ecx, 2
+    code.bytes({0x0F, 0x87}).relative(kDefault); // ja default
+    lea_image_base(code, {0x48, 0x8D, 0x15});    // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2}));
+}
+
+TEST_CASE("jump table: a check on a register changed since the copy bounds nothing") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x89, 0xC8});                    // mov eax, ecx
+    code.bytes({0x83, 0xC1, 0x01});              // add ecx, 1
+    code.bytes({0x83, 0xF9, 0x03});              // cmp ecx, 3
+    code.bytes({0x0F, 0x87}).relative(kDefault); // ja default
+    lea_image_base(code, {0x48, 0x8D, 0x15});    // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(!walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2, 3, 4}));
 }
 
 TEST_CASE("jump table: sparse cases through a byte table, image base register untraced") {
@@ -275,6 +329,78 @@ TEST_CASE("jump table: without a usable bound, entries are read while they stay 
     CHECK(walk.jump_tables[0].targets == cases({0, 1, 2}));
 }
 
+TEST_CASE("jump table: a signed branch between the check and its unsigned branch") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x83, 0xF9, 0x04});              // cmp ecx, 4
+    code.bytes({0x0F, 0x8F}).relative(kDefault); // jg default: says nothing unsigned
+    code.bytes({0x0F, 0x83}).relative(kDefault); // jae default
+    code.bytes({0x48, 0x63, 0xC1});              // movsxd rax, ecx
+    lea_image_base(code, {0x48, 0x8D, 0x15});    // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2, 3}));
+}
+
+TEST_CASE("jump table: an equality test that went the unequal way, then the check") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x83, 0xF9, 0x04});              // cmp ecx, 4
+    code.bytes({0x75, 0x05});                    // jne check (taken on the way to the dispatch)
+    code.bytes({0xE9}).relative(case_block(4));  // jmp case 4
+    code.bytes({0x0F, 0x83}).relative(kDefault); // check: jae default
+    code.bytes({0x48, 0x63, 0xC1});              // movsxd rax, ecx
+    lea_image_base(code, {0x48, 0x8D, 0x15});    // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2, 3}));
+}
+
+TEST_CASE("jump table: a byte-wide index caps an unbounded read") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x0F, 0xB6, 0xC1});           // movzx eax, cl
+    code.bytes({0xC1, 0xE8, 0x06});           // shr eax, 6: at most 3
+    lea_image_base(code, {0x48, 0x8D, 0x15}); // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult walk = s.walk();
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(!walk.jump_tables[0].bounded); // a cap, not a check
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2, 3}));
+}
+
+TEST_CASE("jump table: an unbounded read stops at the next known table") {
+    Switch s;
+    Assembler code(s.builder);
+    code.bytes({0x48, 0x63, 0xC1});           // movsxd rax, ecx: no check
+    lea_image_base(code, {0x48, 0x8D, 0x15}); // lea rdx, [image base]
+    image_relative_tail(code);
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+
+    const WalkResult alone = s.walk();
+    REQUIRE(alone.jump_tables.size() == 1);
+    CHECK(alone.jump_tables[0].targets == cases({0, 1, 2, 3, 4}));
+
+    const WalkResult walk = s.walk({kTable, kTable + 12});
+    CHECK(walk.ok());
+    REQUIRE(walk.jump_tables.size() == 1);
+    CHECK(!walk.jump_tables[0].bounded);
+    CHECK(walk.jump_tables[0].targets == cases({0, 1, 2}));
+}
+
 TEST_CASE("jump table: a bounded table with an entry outside the function is rejected") {
     Switch s;
     Assembler code(s.builder);
@@ -340,4 +466,43 @@ TEST_CASE("jump table: discovery keeps tables with their function") {
     CHECK_EQ(result.stats.jump_tables, size_t{1});
     CHECK_EQ(result.stats.jump_table_targets, size_t{4});
     CHECK_EQ(result.stats.unresolved_indirect_jumps, size_t{0});
+}
+
+TEST_CASE("jump table: discovery stops an unbounded table at another one it found") {
+    Switch s;
+    Assembler code(s.builder);
+    constexpr uint32_t kSecond = kText + 31;
+    code.bytes({0x83, 0xFA, 0x01});                               // cmp edx, 1
+    code.bytes({0x0F, 0x86}).relative(kSecond);                   // jbe second
+    code.bytes({0x48, 0x63, 0xC1});                               // movsxd rax, ecx: no check
+    lea_image_base(code, {0x48, 0x8D, 0x15});                     // lea rdx, [image base]
+    image_relative_tail(code);                                    // through kTable
+    REQUIRE(code.pc() == kSecond);                                // second:
+    code.bytes({0x48, 0x63, 0xC2});                               // movsxd rax, edx
+    lea_image_base(code, {0x4C, 0x8D, 0x05});                     // lea r8, [image base]
+    code.bytes({0x41, 0x8B, 0x8C, 0x80, 0x0C, 0x20, 0x00, 0x00}); // mov ecx, [r8+rax*4+kTable+12]
+    code.bytes({0x4C, 0x01, 0xC1});                               // add rcx, r8
+    code.bytes({0xFF, 0xE1});                                     // jmp rcx
+    // The second table follows the first, and its entries are valid targets for the first too.
+    s.offsets(kTable, {case_block(0), case_block(1), case_block(2), case_block(3), case_block(4)});
+    s.builder.set_entry_point(kText);
+
+    const g6::pe::Image image = s.builder.image();
+    const auto result = g6::recomp::discover_functions(image);
+    const auto* function = result.find(kText);
+    REQUIRE(function != nullptr);
+    REQUIRE(function->jump_tables.size() == 2);
+    for (const JumpTable& table : function->jump_tables) {
+        if (table.table == kTable) {
+            CHECK(!table.bounded);
+            CHECK(table.targets == cases({0, 1, 2}));
+        } else {
+            CHECK_EQ(table.table, kTable + 12);
+            CHECK(table.bounded);
+            CHECK(table.targets == cases({3, 4}));
+        }
+    }
+    const std::vector<uint32_t> starts{kTable, kTable + 12};
+    CHECK(result.table_starts == starts);
+    CHECK_EQ(result.stats.jump_tables_unbounded, size_t{1});
 }

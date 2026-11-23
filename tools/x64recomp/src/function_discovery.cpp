@@ -397,12 +397,15 @@ DiscoveryResult discover_functions(const Image& image, const DiscoveryOptions& o
     std::ranges::sort(
         result.functions,
         [](const DiscoveredFunction& a, const DiscoveredFunction& b) { return a.start < b.start; });
+    std::vector<JumpTable> all_tables;
     for (const DiscoveredFunction& function : result.functions) {
         stats.jump_tables += function.jump_tables.size();
         for (const JumpTable& table : function.jump_tables) {
             stats.jump_table_targets += table.targets.size();
             stats.jump_tables_unbounded += table.bounded ? 0 : 1;
         }
+        all_tables.insert(all_tables.end(), function.jump_tables.begin(),
+                          function.jump_tables.end());
         result.ranges.push_back({{function.start, function.end}, function.start});
         for (const Range& fragment : function.fragments) {
             result.ranges.push_back({fragment, function.start});
@@ -411,6 +414,7 @@ DiscoveryResult discover_functions(const Image& image, const DiscoveryOptions& o
     std::ranges::sort(result.ranges, [](const FunctionRange& a, const FunctionRange& b) {
         return a.range.begin < b.range.begin;
     });
+    result.table_starts = table_starts(all_tables);
     for (std::vector<uint32_t>* sites : {&result.cpuid_sites, &result.xgetbv_sites}) {
         std::ranges::sort(*sites);
         const auto [first, last] = std::ranges::unique(*sites);

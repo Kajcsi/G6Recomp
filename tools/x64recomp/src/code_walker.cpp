@@ -4,6 +4,7 @@
 #include <optional>
 #include <ranges>
 #include <unordered_set>
+#include <utility>
 
 #include <Zydis/Zydis.h>
 
@@ -45,6 +46,36 @@ CodeWalker::CodeWalker(const pe::Image& image) : image_(image) {
 WalkResult CodeWalker::walk(std::span<const uint32_t> entries, std::span<const Range> ranges,
                             const std::function<bool(uint32_t)>& is_other_function,
                             const InstructionVisitor& visit) const {
+    // The visitor sees the first walk only if it stands: a walk that has to be redone may have
+    // decoded data read as table entries.
+    std::vector<std::pair<uint32_t, ZydisDecodedInstruction>> held;
+    InstructionVisitor hold;
+    if (visit) {
+        hold = [&held](uint32_t rva, const ZydisDecodedInstruction& insn) {
+            held.emplace_back(rva, insn);
+        };
+    }
+    WalkResult result = walk_once(entries, ranges, is_other_function, hold, table_starts_);
+    // An unbounded table may have run into a table this walk found after it; walk again with
+    // those tables known.
+    if (std::ranges::any_of(result.jump_tables, [](const JumpTable& t) { return !t.bounded; })) {
+        std::vector<uint32_t> starts = table_starts(result.jump_tables);
+        if (runs_into_table(result.jump_tables, starts)) {
+            starts.insert(starts.end(), table_starts_.begin(), table_starts_.end());
+            sort_unique(starts);
+            return walk_once(entries, ranges, is_other_function, visit, starts);
+        }
+    }
+    for (const auto& [rva, insn] : held) {
+        visit(rva, insn);
+    }
+    return result;
+}
+
+WalkResult CodeWalker::walk_once(std::span<const uint32_t> entries, std::span<const Range> ranges,
+                                 const std::function<bool(uint32_t)>& is_other_function,
+                                 const InstructionVisitor& visit,
+                                 std::span<const uint32_t> table_starts) const {
     WalkResult result;
     const auto mapped = image_.mapped();
     const auto range_of = [&](uint32_t rva) -> const Range* {
@@ -178,8 +209,8 @@ WalkResult CodeWalker::walk(std::span<const uint32_t> entries, std::span<const R
                         result.import_jump_slots.push_back(static_cast<uint32_t>(slot));
                     }
                 } else {
-                    const IndirectJump jump =
-                        analyze_indirect_jump(image_, decoder_, path, pc, stays_inside);
+                    const IndirectJump jump = analyze_indirect_jump(image_, decoder_, path, pc,
+                                                                    stays_inside, table_starts);
                     switch (jump.kind) {
                     case IndirectJumpKind::kJumpTable: {
                         std::vector<uint32_t> targets = jump.table.targets;
@@ -219,6 +250,29 @@ WalkResult CodeWalker::walk(std::span<const uint32_t> entries, std::span<const R
     sort_unique(result.branch_targets);
     std::ranges::sort(result.jump_tables, {}, &JumpTable::jump);
     return result;
+}
+
+std::vector<uint32_t> table_starts(std::span<const JumpTable> tables) {
+    std::vector<uint32_t> starts;
+    for (const JumpTable& table : tables) {
+        starts.push_back(table.table);
+        if (table.index_table != 0) {
+            starts.push_back(table.index_table);
+        }
+    }
+    sort_unique(starts);
+    return starts;
+}
+
+bool runs_into_table(std::span<const JumpTable> tables, std::span<const uint32_t> starts) {
+    return std::ranges::any_of(tables, [&](const JumpTable& table) {
+        if (table.bounded) {
+            return false;
+        }
+        const uint64_t end = table.table + (uint64_t{table.entry_size} * table.targets.size());
+        const auto next = std::ranges::upper_bound(starts, table.table);
+        return next != starts.end() && *next < end;
+    });
 }
 
 } // namespace g6::recomp

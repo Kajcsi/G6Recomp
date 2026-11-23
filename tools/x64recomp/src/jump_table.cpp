@@ -132,6 +132,7 @@ struct Address {
 
 struct EntryCount {
     std::optional<uint32_t> count;
+    std::optional<uint32_t> cap; // without a count: the index's width allows no more entries
     uint32_t index_table = 0;
     uint32_t index_count = 0;
     bool rejected = false;
@@ -140,8 +141,10 @@ struct EntryCount {
 class Analyzer {
 public:
     Analyzer(const pe::Image& image, std::vector<Decoded> window,
-             const std::function<bool(uint32_t)>& valid_target)
-        : image_(image), window_(std::move(window)), valid_target_(valid_target) {}
+             const std::function<bool(uint32_t)>& valid_target,
+             std::span<const uint32_t> table_starts)
+        : image_(image), window_(std::move(window)), valid_target_(valid_target),
+          table_starts_(table_starts) {}
 
     IndirectJump run(const Decoded& jump) const {
         const auto operands = jump.visible();
@@ -347,8 +350,14 @@ private:
     // along the path for a bounds check (`cmp` and an unsigned branch) or a small mask on the
     // index, or on a value the index was derived from by copies, extensions, non-negative
     // offsets (`lea`, `add`), masks (`and`) and right shifts (`shr`). Those steps are applied
-    // to the bound found, in program order.
-    std::optional<uint32_t> bound(ZydisRegister index, size_t before) const {
+    // to the bound found, in program order. A check may also be on the other side of a register
+    // copy made before it, with neither register written in between: `mov r15d, edx` then
+    // `cmp edx, 8` bounds r15, and so does `mov edx, r15d` then `cmp edx, 8`.
+    //
+    // `cap`, when given, receives the most values a zero-extended byte on the way allows, which
+    // limits an unbounded read when no check or mask is found.
+    std::optional<uint32_t> bound(ZydisRegister index, size_t before,
+                                  std::optional<uint32_t>* cap = nullptr) const {
         enum class Op : uint8_t { kAdd, kAnd, kShiftRight };
         struct Step {
             Op op;
@@ -379,11 +388,30 @@ private:
         const auto in_chain = [&chain](ZydisRegister reg) {
             return std::ranges::find(chain, enclosing(reg)) != chain.end();
         };
+        // Compares on registers outside the chain, each register's latest one, kept while the
+        // register isn't written before them: a copy to or from the chain makes them bound the
+        // index as well.
+        struct OtherCompare {
+            ZydisRegister reg;
+            size_t at;
+            uint64_t value;
+        };
+        std::vector<OtherCompare> others;
+        const auto other_bound = [&](ZydisRegister reg) -> std::optional<uint32_t> {
+            const auto it = std::ranges::find(others, enclosing(reg), &OtherCompare::reg);
+            if (it == others.end()) {
+                return std::nullopt;
+            }
+            const auto largest = largest_after_compare(it->at, it->value);
+            return largest ? finish(*largest) : std::nullopt;
+        };
         for (size_t i = before; i-- > 0;) {
             const Decoded& decoded = window_[i];
             const auto operands = decoded.visible();
             const ZydisMnemonic mnemonic = decoded.insn.mnemonic;
             if (decoded.insn.meta.category == ZYDIS_CATEGORY_CALL) {
+                std::erase_if(others,
+                              [](const OtherCompare& other) { return is_volatile(other.reg); });
                 std::erase_if(chain, is_volatile);
                 if (chain.empty()) {
                     return std::nullopt;
@@ -396,9 +424,32 @@ private:
             const uint64_t value = with_immediate ? immediate(operands[1], operands[0].size) : 0;
 
             if (mnemonic == ZYDIS_MNEMONIC_CMP && with_immediate) {
-                const auto largest = largest_after_compare(i, value);
-                return largest ? finish(*largest) : std::nullopt;
+                if (const auto largest = largest_after_compare(i, value)) {
+                    return finish(*largest);
+                }
+                continue; // no bound on this path, but an earlier check still holds
             }
+            const bool register_pair =
+                operands.size() == 2 && is_register(operands[0]) && is_register(operands[1]);
+            if (mnemonic == ZYDIS_MNEMONIC_CMP && operands.size() == 2 &&
+                is_register(operands[0]) && is_immediate(operands[1])) {
+                const ZydisRegister reg = enclosing(operands[0].reg.value);
+                if (std::ranges::find(others, reg, &OtherCompare::reg) == others.end()) {
+                    others.push_back({reg, i, immediate(operands[1], operands[0].size)});
+                }
+                continue;
+            }
+            // `mov reg, chain` with a compare on reg after it: reg held the tracked value there.
+            // Only a full copy of at least 32 bits, so the compare sees the whole value.
+            if (mnemonic == ZYDIS_MNEMONIC_MOV && register_pair && operands[1].size >= 32 &&
+                in_chain(operands[1].reg.value)) {
+                if (const auto found = other_bound(operands[0].reg.value)) {
+                    return found;
+                }
+            }
+            std::erase_if(others, [&](const OtherCompare& other) {
+                return writes_register(decoded, other.reg);
+            });
             if (!std::ranges::any_of(
                     chain, [&](ZydisRegister reg) { return writes_register(decoded, reg); })) {
                 continue;
@@ -433,14 +484,22 @@ private:
                                                                     : ZYDIS_REGISTER_NONE;
             const ZydisRegister written =
                 on_chain ? enclosing(operands[0].reg.value) : ZYDIS_REGISTER_NONE;
+            if (mnemonic == ZYDIS_MNEMONIC_MOVZX && on_chain && operands[1].size == 8 &&
+                cap != nullptr && !cap->has_value()) {
+                *cap = finish(UINT8_MAX);
+            }
             std::erase_if(chain, [&](ZydisRegister reg) { return writes_register(decoded, reg); });
             switch (mnemonic) {
             case ZYDIS_MNEMONIC_MOV:
             case ZYDIS_MNEMONIC_MOVSXD:
             case ZYDIS_MNEMONIC_MOVZX:
             case ZYDIS_MNEMONIC_MOVSX:
-                // A register copy: before it, the source held the value.
+                // A register copy: before it, the source held the value, and still did at a
+                // compare on it after the copy.
                 if (source != ZYDIS_REGISTER_NONE) {
+                    if (const auto found = other_bound(source)) {
+                        return found;
+                    }
                     chain.push_back(enclosing(source));
                 }
                 break;
@@ -471,7 +530,9 @@ private:
     }
 
     // The largest value `cmp reg, limit` at window position `at` allows on this path, from the
-    // unsigned branch that follows it and the direction the path took.
+    // unsigned branches that follow it and the direction the path took at each. A branch that
+    // says nothing about an upper bound on this path (a signed one, or an equality test that
+    // went the unequal way) is passed over while the flags stay the same.
     std::optional<uint64_t> largest_after_compare(size_t at, uint64_t limit) const {
         for (size_t i = at + 1; i < window_.size(); ++i) {
             const Decoded& decoded = window_[i];
@@ -485,9 +546,16 @@ private:
                 case ZYDIS_MNEMONIC_JB:
                     return decoded.taken && limit != 0 ? std::optional{limit - 1} : std::nullopt;
                 case ZYDIS_MNEMONIC_JNZ: // reg == limit unless taken
-                    return decoded.taken ? std::nullopt : std::optional{limit};
-                case ZYDIS_MNEMONIC_JZ: return decoded.taken ? std::optional{limit} : std::nullopt;
-                default: return std::nullopt;
+                    if (!decoded.taken) {
+                        return limit;
+                    }
+                    break;
+                case ZYDIS_MNEMONIC_JZ:
+                    if (decoded.taken) {
+                        return limit;
+                    }
+                    break;
+                default: break;
                 }
             }
             if (changes_flags(decoded)) {
@@ -504,7 +572,7 @@ private:
         const Value index = evaluate(load.index, load.at, 0);
         if (index.kind != ValueKind::kLoad || index.load.size != 1 || index.load.scale != 1 ||
             index.load.index == ZYDIS_REGISTER_NONE) {
-            result.count = bound(load.index, load.at);
+            result.count = bound(load.index, load.at, &result.cap);
             return result;
         }
         Load bytes_load = index.load;
@@ -605,7 +673,14 @@ private:
             if (load.assumed_base != ZYDIS_REGISTER_NONE) {
                 return {}; // too little evidence that the register holds the image base
             }
-            for (uint32_t entry = 0; entry < kMaxUnboundedEntries; ++entry) {
+            // Stop at the next known table, or where a byte-wide index runs out.
+            uint64_t limit =
+                std::min<uint64_t>(kMaxUnboundedEntries, count.cap.value_or(UINT32_MAX));
+            if (const auto next = std::ranges::upper_bound(table_starts_, table.table);
+                next != table_starts_.end()) {
+                limit = std::min<uint64_t>(limit, (*next - table.table) / table.entry_size);
+            }
+            for (uint32_t entry = 0; entry < limit; ++entry) {
                 const auto target = target_of(entry);
                 if (!target) {
                     break;
@@ -623,13 +698,15 @@ private:
     const pe::Image& image_;
     std::vector<Decoded> window_;
     const std::function<bool(uint32_t)>& valid_target_;
+    std::span<const uint32_t> table_starts_;
 };
 
 } // namespace
 
 IndirectJump analyze_indirect_jump(const pe::Image& image, const ZydisDecoder& decoder,
                                    std::span<const PathStep> path, uint32_t jump_pc,
-                                   const std::function<bool(uint32_t)>& valid_target) {
+                                   const std::function<bool(uint32_t)>& valid_target,
+                                   std::span<const uint32_t> table_starts) {
     const auto jump = decode(image, decoder, jump_pc, false);
     if (!jump) {
         return {};
@@ -647,7 +724,7 @@ IndirectJump analyze_indirect_jump(const pe::Image& image, const ZydisDecoder& d
         }
         window.push_back(*decoded);
     }
-    return Analyzer(image, std::move(window), valid_target).run(*jump);
+    return Analyzer(image, std::move(window), valid_target, table_starts).run(*jump);
 }
 
 } // namespace g6::recomp

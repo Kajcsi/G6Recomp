@@ -308,6 +308,7 @@ public:
     Scanner(const Image& image, const DiscoveryResult& discovery, ScanReport& report)
         : image_(image), discovery_(discovery), report_(report), covered_(image.size_of_image()) {
         ZydisDecoderInit(&decoder_, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+        walker_.set_table_starts(discovery.table_starts);
         for (const DiscoveredFunction& function : discovery.functions) {
             for (const JumpTable& table : function.jump_tables) {
                 tables_.push_back(

@@ -106,6 +106,7 @@ class Mapper {
 public:
     Mapper(const pe::Image& image, const DiscoveryResult& discovery)
         : image_(image), discovery_(discovery), walker_(image) {
+        walker_.set_table_starts(discovery.table_starts);
         ZydisDecoderInit(&decoder_, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
     }
 

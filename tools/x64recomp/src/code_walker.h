@@ -61,9 +61,26 @@ public:
                     const std::function<bool(uint32_t)>& is_other_function,
                     const InstructionVisitor& visit = {}) const;
 
+    // Jump tables and byte index tables known from other walks, which an unbounded table can't
+    // run into (sorted, without duplicates). Tables a walk finds itself count too: a walk with
+    // an unbounded table is redone once they are known.
+    void set_table_starts(std::vector<uint32_t> starts) { table_starts_ = std::move(starts); }
+
 private:
+    WalkResult walk_once(std::span<const uint32_t> entries, std::span<const Range> ranges,
+                         const std::function<bool(uint32_t)>& is_other_function,
+                         const InstructionVisitor& visit,
+                         std::span<const uint32_t> table_starts) const;
+
     const pe::Image& image_;
     ZydisDecoder decoder_{};
+    std::vector<uint32_t> table_starts_;
 };
+
+// Every jump table and byte index table in `tables`, sorted, without duplicates.
+std::vector<uint32_t> table_starts(std::span<const JumpTable> tables);
+
+// Whether an unbounded table in `tables` reads past one of `starts` (sorted).
+bool runs_into_table(std::span<const JumpTable> tables, std::span<const uint32_t> starts);
 
 } // namespace g6::recomp
