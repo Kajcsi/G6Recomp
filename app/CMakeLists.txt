@@ -5,7 +5,7 @@ g6_write_known_builds(${CMAKE_CURRENT_BINARY_DIR}/include/g6/app/known_builds.h)
 
 add_library(g6runner STATIC g6recomp/src/runner.cpp)
 target_include_directories(g6runner PUBLIC g6recomp/include ${CMAKE_CURRENT_BINARY_DIR}/include)
-target_link_libraries(g6runner PUBLIC g6imports g6loader g6io g6common PRIVATE bcrypt)
+target_link_libraries(g6runner PUBLIC g6imports g6loader g6io g6gdk g6common PRIVATE bcrypt)
 g6_target_defaults(g6runner)
 
 # The guest executable's static TLS takes the runner's slot, index 0 (docs/execution-model.md,

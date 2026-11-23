@@ -4,7 +4,8 @@ The Xbox Game Runtime APIs: `runtime/gdk` implements them against the public GDK
 a guest built against the GDK gets the types, layouts, and error codes it expects. Status per
 function is in [hle-status.md](hle-status.md), "runtime/gdk".
 
-**Status: XTaskQueue, XAsync, XError, XThread, and XUser implemented and bound (2026-11-23).** The
+**Status: XTaskQueue, XAsync, XError, XThread, XUser, and XGameSave implemented and bound
+(2026-11-23).** The
 guest reaches them the way a title does on the console: through our `xgameruntime.dll`, its
 `QueryApiImpl`, and the interface vtables ("The Game Runtime DLL" below). The default policy never
 forwards `xgameruntime.dll` to the host's copy, which talks to Xbox services (hard rule 5);
@@ -64,8 +65,8 @@ XCurl. A GDK title links the same library into its executable.
 
 **Lookups.** Each thunk passes a class ID and an interface ID to a wrapper, which starts the
 runtime if needed and then calls `QueryApiImpl(class, interface, &object)`. The threading,
-error, and feature thunks pass the same GUID twice; the XUser thunks pass their class with one of
-two interfaces.
+error, and feature thunks pass the same GUID twice; the XUser and XGameSave thunks pass their
+class with one of two interfaces.
 The thunk then calls one vtable slot of the object and releases it (slot 2). A wrapper that
 gets `REGDB_E_CLASSNOTREG` (0x80040154) turns it into 0x89240107 and reports it through
 `XErrorReport`.
@@ -111,7 +112,7 @@ passes, and whether it uses the result and how wide it is.
 |---|---|
 | 3 | `XGameRuntimeIsFeatureAvailable`: one argument, returns `bool` |
 
-The XUser slots are in "XUser" below.
+The XUser and XGameSave slots are in their own sections below.
 
 The threading order matches xgameruntime-rs (MIT,
 [related-work.md](related-work.md)), with one exception. xgameruntime-rs puts a private
@@ -356,6 +357,105 @@ ID. Once input exists (M4), a gamepad has to be reported moving from no user to 
 through the device association callback, on the title's queue, because some titles count a pad
 as connected only then ([hle-status.md](hle-status.md)).
 
+## XGameSave
+
+XGameSave keeps the game's saves in the per-user data directory, in `<data>\saves`, which the
+runner sets before the guest starts. Nothing syncs anywhere (hard rule 5): no container ever
+needs a sync, and no call waits on a network. The behavior follows the public GDK
+documentation. Where it is silent, the rows other projects report from the PC runtime decide
+([related-work.md](related-work.md)). The rest is our choice, marked as such below.
+
+**Interfaces.** One class, 704c3f58-e629-4cc2-b197-30511b996fe2, with two interfaces whose thunks
+call one vtable: 1bfff3af-f14a-40a3-8e35-9ada906593f9 (30 thunks, slots 3 to 32) and
+ab4ae4fb-6508-4950-a032-45fd4bf8c43b (17 thunks, slots 33 to 49). We checked every thunk in the
+console's libHttpClient for its slot, the number of arguments it passes, and whether it keeps the
+result. xgameruntime-rs (MIT) has the same order through slot 32.
+
+| Slot | XGameSave (1bfff3af; ab4ae4fb from 33) |
+|---|---|
+| 3 to 6 | `XGameSaveInitializeProvider`, `InitializeProviderAsync`, `InitializeProviderResult`, `CloseProvider` (no result) |
+| 7 to 9 | `XGameSaveGetRemainingQuota`, `GetRemainingQuotaAsync`, `GetRemainingQuotaResult` |
+| 10 to 12 | `XGameSaveDeleteContainer`, `DeleteContainerAsync`, `DeleteContainerResult` |
+| 13 to 17 | `XGameSaveGetContainerInfo`, `EnumerateContainerInfo`, `EnumerateContainerInfoByName`, `CreateContainer`, `CloseContainer` (no result) |
+| 18, 19 | `XGameSaveEnumerateBlobInfo`, `EnumerateBlobInfoByName` |
+| 20 to 22 | `XGameSaveReadBlobData`, `ReadBlobDataAsync`, `ReadBlobDataResult` |
+| 23 to 29 | `XGameSaveCreateUpdate`, `CloseUpdate` (no result), `SubmitBlobWrite`, `SubmitBlobDelete`, `SubmitUpdate`, `SubmitUpdateAsync`, `SubmitUpdateResult` |
+| 30 to 32 | `XGameSaveFilesGetFolderWithUiAsync`, `XGameSaveFilesGetFolderWithUiResult`, `XGameSaveFilesGetRemainingQuota`: not provided, `E_NOTIMPL`, logged once |
+| 33 to 49 | Unknown: 2, 1 (no result), 2, 3, 2, 1, 4, 2, 2, 2, 2, 2, 3, 1, 3, 1, and 2 arguments. Fail with `E_NOTIMPL` |
+
+xgameruntime-rs names slots 33 to 49 only in comments (a configuration initializer and UI
+callbacks among them), and nothing here confirms those names. They stay unknown, each logged
+once, until the game is seen calling one.
+
+**Providers.** Only the offline user's handle opens one; any other gives `E_INVALIDARG`. A null
+or empty configuration ID gives `E_GS_NO_SERVICE_CONFIGURATION` (0x80830009). Each
+configuration ID has its own folder, so two configurations never see each other's containers.
+Closing a provider expires its containers and updates: later calls on them give
+`E_GS_HANDLE_EXPIRED` (0x8083000D), as a closed handle does. A null handle gives
+`E_INVALIDARG`. Until the runner sets the save directory, providers fail with `E_GS_NO_ACCESS`
+(0x80830002), logged.
+
+**Containers.** Names follow the public rules: 1 to 256 characters. Up to the last `/`, only
+letters, digits, `_`, and `/` are allowed. After it comes a non-empty name of letters, digits,
+`_`, `.`, and `-` that doesn't end in `.` or contain `..`. Anything else gives
+`E_GS_INVALID_CONTAINER_NAME` (0x80830001), in delete too, where xcl found that an empty name
+once deleted a whole save folder. Names match without case, and a container keeps the spelling
+it was first saved with.
+
+* `XGameSaveCreateContainer` opens a container whether or not it exists. A container exists
+  once an update to it is submitted, so an empty update makes an empty container.
+* Enumerations list containers and blobs in name order, compared without case. The `ByName`
+  forms take a prefix, compared the same way. A callback that returns false ends the
+  enumeration.
+* `last_modified_time` is the time of the last update, and `needs_sync` is always false.
+* Our choices, to check against the game: `XGameSaveGetContainerInfo` on a container that
+  doesn't exist fails with `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)` (0x80070490) without calling the
+  callback, and deleting one succeeds.
+
+**Updates.** An update collects blob writes and deletes, copying the data as each write is
+submitted to it. Submitting the update applies every change, or none:
+
+* New blobs go to new files, flushed to the disk, and then one rename replaces the container's
+  manifest. A crash leaves the old manifest whole, and the files it left are never listed and
+  are removed by the next update.
+* A delete moves the container's folder aside in one rename before removing it. A crash leaves
+  no half-deleted container, and the next provider removes what is left.
+* The last change to a blob name wins, and a null display name keeps the container's.
+* One update writes at most 16 MB (`GS_MAX_BLOB_SIZE`), in one blob or all together; more
+  gives `E_GS_UPDATE_TOO_BIG` (0x80830005).
+* An update is submitted once: a second submit, or a change after the first, gives
+  `E_GS_HANDLE_EXPIRED`.
+* A submit that would take a configuration past its 256 MB quota gives `E_GS_QUOTA_EXCEEDED`
+  (0x80830006) and changes nothing. `XGameSaveGetRemainingQuota` gives the quota less every
+  blob's size. A full disk gives `E_GS_OUT_OF_LOCAL_STORAGE` (0x80830003).
+
+**Reads.** `XGameSaveReadBlobData` fills the caller's buffer with one 24-byte `XGameSaveBlob`
+per blob, then each blob's data in the same order, without padding, as xbox-emulator reports.
+Null names read every blob, in name order. The names point to storage that lasts as long as the
+process. A missing blob gives `E_GS_BLOB_NOT_FOUND` (0x80830008), and a buffer too small for
+everything gives `E_GS_PROVIDED_BUFFER_TOO_SMALL` (0x80830007). The asynchronous form's result
+size covers the records and the data, and `XGameSaveReadBlobDataResult` counts the records from
+where the first blob's data starts. A buffer smaller than that size gets `XAsyncGetResult`'s
+`E_NOT_SUFFICIENT_BUFFER`.
+
+**Threads.** The synchronous calls that touch the disk (initialize, quota, delete, read, and
+submit) fail with `E_GS_ASYNC_FUNCTION_REQUIRED` (0x8083000E) on a thread marked time-sensitive,
+logged once each, and leave an update as it was. The asynchronous forms do their work on the
+queue's work port, in queue order. On a queue that is shutting down they give `E_ABORT` and do
+nothing, and an update refused that way can still be submitted. Disk work runs under one lock,
+so updates and deletes apply one at a time.
+
+**On disk.** `<data>\saves\s-<configuration>\c-<container>\` holds `manifest.txt` and one
+numbered `.blob` file per blob.
+
+* A folder name is the name in lower case, with every character outside `a-z0-9_.-` and a
+  trailing dot escaped as `%xx`. The prefix keeps it clear of `.`, `..`, and device names such as
+  `CON`. A name longer than 100 characters keeps its first 80, then `~` and a 64-bit hash of the
+  whole name.
+* The manifest is a small text file with the container's real name, its display name, its time,
+  and each blob's name, size, and file. A damaged one is logged and its container left alone;
+  calls on it fail with `ERROR_FILE_CORRUPT` (0x80070570).
+
 ## Tests
 
 `test_gdk` (nogame) covers:
@@ -374,6 +474,11 @@ as connected only then ([hle-status.md](hle-status.md)).
   gamertag and its buffer checks, the privilege policy and resolving it, the calls that fail
   offline or without UI, registrations, devices, and its three interfaces called through their
   slots, including `IUnknown` across a class
+* XGameSave: providers for the offline user and their configurations, containers that appear
+  on submit, updates that write, replace, and delete together, reads into one buffer directly
+  and through the queue, the name rules and case, prefixes, deletes in queue order and on a
+  terminating queue, the update and quota limits, saves across providers, files a crash leaves
+  behind, expired handles, the time-sensitive rule, and the slots through `QueryApiImpl`
 * the initializers
 
 `test_imports` checks that the default policy binds the six entry points to these functions and

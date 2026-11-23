@@ -341,6 +341,7 @@ g6_add_test(test_imports LABEL nogame
 
 g6_add_test(test_gdk LABEL nogame
     SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp gdk/test_game_runtime.cpp gdk/test_user.cpp
+            gdk/test_game_save.cpp
     LIBS g6gdk)
 
 # The guest executable for test_crt_exit: original, and release /MD like the game's executable,

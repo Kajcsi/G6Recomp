@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include "g6/gdk/game_save.h"
 #include "g6/imports/command_line.h"
 #include "g6/imports/crt_exit.h"
 #include "g6/imports/policy.h"
@@ -230,6 +231,7 @@ Identified identify_build(const RunOptions& options, std::span<const KnownBuild>
     data_dir = fs::absolute(data_dir).lexically_normal();
     io::FileSystem& file_system = io::active_file_system();
     io::mount_standard_drives(file_system, options.game_dir, data_dir);
+    gdk::set_game_save_directory(data_dir / L"saves");
     LOG_INFO(runner, "G: is {} (read-only); the data directory is {}", utf8(options.game_dir),
              utf8(data_dir));
 

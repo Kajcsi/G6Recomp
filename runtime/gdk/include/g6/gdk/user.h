@@ -162,6 +162,9 @@ inline constexpr uint64_t kOfflineUserId = 0x0009000000000001; // in the range X
 inline constexpr uint64_t kOfflineUserLocalId = 1;
 inline constexpr const char* kOfflineGamertag = "Player";
 
+// Whether `user` is the offline user's handle, for the other services. Logs nothing.
+bool is_offline_user(XUserHandle user);
+
 // Handles. Every function that takes a user fails with E_INVALIDARG for any other handle.
 HRESULT XUserDuplicateHandle(XUserHandle handle, XUserHandle* duplicated);
 void XUserCloseHandle(XUserHandle handle);

@@ -47,9 +47,9 @@ read-write:
   drive-letter strings looks for `D:` as well as `G:`.
 
 **The data directory.** `<data>` is `%LOCALAPPDATA%\G6Recomp\<build ID>`, one per supported
-build. Saves and settings will go there too, which is how `CLAUDE.md`'s "redirects writes" is
-met: the game writes to the drives the console gives it for writing, and those drives live
-here.
+build. XGameSave keeps its containers in `<data>\saves` (`docs/gdk.md`, "XGameSave"), and
+settings will go here too, which is how `CLAUDE.md`'s "redirects writes" is met: the game writes
+to the drives and services the console gives it for writing, and those live here.
 
 **Writes to a read-only mount** fail with `ERROR_ACCESS_DENIED`, as on the console. There is no
 overlay that copies files out of the install: the console's package drive can't be written

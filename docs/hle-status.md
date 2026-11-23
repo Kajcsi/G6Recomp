@@ -35,7 +35,8 @@ be checked as each service is built:
   * Leonida's static scan finds 16 thunks in `XCurl.dll`, all of them called, and 404 in
     libHttpClient, of which it calls 15, all in `XThreadingImpl` and `XErrorImpl`.
   * The public layouts lack two interface IDs: one for `XGameSaveImpl` slots 33 to 49 and one
-    for `XGameStreamingImpl` slots 3 to 6.
+    for `XGameStreamingImpl` slots 3 to 6. The first is ab4ae4fb-6508-4950-a032-45fd4bf8c43b,
+    from the console's libHttpClient thunks ([gdk.md](gdk.md), "XGameSave").
   * The two public layout sources, xgameruntime-docs and the Wine IDL in
     xodus-gaming/xgameruntime, disagree where the documentation has an "unknown" slot: the IDL
     leaves it out, so every later method sits one slot early there.
@@ -45,7 +46,7 @@ be checked as each service is built:
   and `XErrorReport` does return HRESULT. `XThreadingImpl` slot 8 fails rather than returning
   `S_OK`. **Taken** for the XError functions and slot 8, which fails with `E_NOTIMPL` here.
 * `XGameSave` calls on a closed handle return `E_GS_HANDLE_EXPIRED` (0x8083000D)
-  (xbox-emulator).
+  (xbox-emulator). **Taken**, also for the containers and updates of a closed provider.
 * `XStore` sizes, unverified (Leonida): `STORE_SKU_ID_SIZE` 18 and `SKU_ID_SIZE` 5, which make
   `XStoreGameLicense` 104 bytes. Check them against the executable's use before relying on
   them.
@@ -59,7 +60,7 @@ be checked as each service is built:
   the user, until input exists (M4).
 * `XGameSave` container names are 1 to 256 characters, otherwise
   `E_GS_INVALID_CONTAINER_NAME`, in the sync and async forms (xcl: an empty name deleted the
-  whole save folder).
+  whole save folder). **Taken**, with the public character rules as well.
 * `XPackageGetIdentifier` takes three arguments: path or name, buffer size, buffer (xcl).
 * `XSystemGetConsoleId` gives the documented PC id, `00000000.00000000.00000000.00000000.00`,
   38 characters; titles size the buffer for exactly that (xcl, and xbox-emulator's 39 bytes).
@@ -271,15 +272,15 @@ command line is never read or changed.
 The Game Runtime ([gdk.md](gdk.md)). Signatures and layouts are the public GDK's; XTaskQueue
 and XAsync follow libHttpClient's behavior (MIT), with no code taken. A title reaches these
 functions through `xgameruntime.dll`'s `QueryApiImpl` and the service vtables, not through named
-imports, so the rows give the public names and gdk.md, "Slots" and "XUser", gives each slot. Tested by
-`test_gdk`, and the policy's binding by `test_imports`.
+imports, so the rows give the public names and gdk.md ("Slots", "XUser", and "XGameSave") gives
+each slot. Tested by `test_gdk`, and the policy's binding by `test_imports`.
 
 **xgameruntime.dll**, bound by `default_game_policy()`. Every other export is `E_NOTIMPL`, and
 `GetProcAddress` finds nothing for it.
 
 | Function | Status | Notes |
 |---|---|---|
-| `QueryApiImpl` | implemented | Static objects for the threading, error, feature, XUser, and XUser device services. `REGDB_E_CLASSNOTREG` for any other service, logged once per class; `E_NOINTERFACE` for an interface the class doesn't have, logged once per class and interface. |
+| `QueryApiImpl` | implemented | Static objects for the threading, error, feature, XUser, XUser device, and XGameSave services. `REGDB_E_CLASSNOTREG` for any other service, logged once per class; `E_NOINTERFACE` for an interface the class doesn't have, logged once per class and interface. |
 | `InitializeApiImpl`, `InitializeApiImplEx`, `InitializeApiImplEx2` | implemented | Log their versions and flags once and succeed. |
 | `UninitializeApiImpl` | implemented | Succeeds. |
 | `XErrorReport` | implemented | Also exported by name. See the XError rows. |
@@ -325,6 +326,18 @@ imports, so the rows give the public names and gdk.md, "Slots" and "XUser", give
 | `XUserGetDefaultAudioEndpointUtf16` and its change registration | implemented | No chat endpoint: `ERROR_NOT_FOUND`, logged once. The registration is kept and never called. |
 | `XUserFindControllerForUserWithUiAsync`, `XUserFindControllerForUserWithUiResult` | implemented | No pairing dialog: `E_ABORT` through the queue. |
 | XUser slots 15, 37 to 41, and 43 to 46 | stubbed | No thunk (15), or functions an offline user doesn't need: logged once with the caller, `E_NOTIMPL` ([gdk.md](gdk.md), "XUser"). |
+| `XGameSaveInitializeProvider`, its async form and result, `XGameSaveCloseProvider` | implemented | The offline user only, otherwise `E_INVALIDARG`; a folder per configuration ID under `<data>\saves`, none syncing. A null or empty ID gives `E_GS_NO_SERVICE_CONFIGURATION`; no save directory gives `E_GS_NO_ACCESS`, logged. Closing expires the provider's containers and updates. |
+| `XGameSaveGetRemainingQuota`, its async form and result | implemented | 256 MB per configuration, less every blob's size. |
+| `XGameSaveCreateContainer`, `XGameSaveCloseContainer` | implemented | Opens a container whether or not it exists; it exists once an update is submitted. Names follow the public rules, 1 to 256 characters, and match without case. |
+| `XGameSaveDeleteContainer`, its async form and result | implemented | One rename moves the folder aside before it is removed; a missing container succeeds. Invalid names give `E_GS_INVALID_CONTAINER_NAME`. |
+| `XGameSaveGetContainerInfo`, `XGameSaveEnumerateContainerInfo`, `XGameSaveEnumerateContainerInfoByName` | implemented | Name order without case, a prefix for `ByName`, `needs_sync` always false. A container that doesn't exist gives `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)` without a callback (our choice). |
+| `XGameSaveEnumerateBlobInfo`, `XGameSaveEnumerateBlobInfoByName` | implemented | Name order without case. |
+| `XGameSaveReadBlobData`, its async form and result | implemented | 24-byte records, then the data, in one buffer. `E_GS_BLOB_NOT_FOUND` and `E_GS_PROVIDED_BUFFER_TOO_SMALL` as documented. |
+| `XGameSaveCreateUpdate`, `XGameSaveCloseUpdate`, `XGameSaveSubmitBlobWrite`, `XGameSaveSubmitBlobDelete` | implemented | Data copied when submitted to the update; 16 MB per update, otherwise `E_GS_UPDATE_TOO_BIG`. |
+| `XGameSaveSubmitUpdate`, its async form and result | implemented | All changes or none: new files, then one manifest rename. Once per update, then `E_GS_HANDLE_EXPIRED`; `E_GS_QUOTA_EXCEEDED` past the quota. |
+| The synchronous disk calls on a time-sensitive thread | implemented | `E_GS_ASYNC_FUNCTION_REQUIRED`, logged once per function, leaving an update as it was. |
+| `XGameSaveFilesGetFolderWithUiAsync`, its result, `XGameSaveFilesGetRemainingQuota` | stubbed | XGameSaveFiles isn't provided: `E_NOTIMPL`, logged once. |
+| XGameSave slots 33 to 49 (interface ab4ae4fb) | stubbed | Unknown: logged once with the caller, `E_NOTIMPL` ([gdk.md](gdk.md), "XGameSave"). |
 
 <!-- Template for a folder:
 

@@ -13,6 +13,7 @@
 
 #include "g6/gdk/async.h"
 #include "g6/gdk/error.h"
+#include "g6/gdk/game_save.h"
 #include "g6/gdk/task_queue.h"
 #include "g6/gdk/thread.h"
 #include "g6/gdk/user.h"
@@ -251,12 +252,71 @@ const std::array<const void*, 11> kUserDeviceSlots = {
     method<&XUserFindControllerForUserWithUiResult>(),
 };
 
+// XGameSaveImpl. Slots 30 to 32 are XGameSaveFiles, which isn't provided. Slots 33 to 49,
+// called through the second interface, have no known function: their thunks pass 2, 1, 2, 3, 2,
+// 1, 4, 2, 2, 2, 2, 2, 3, 1, 3, 1, and 2 arguments (docs/gdk.md, "XGameSave").
+const std::array<const void*, 50> kGameSaveSlots = {
+    reinterpret_cast<const void*>(&query_interface),
+    reinterpret_cast<const void*>(&add_ref),
+    reinterpret_cast<const void*>(&release),
+    method<&XGameSaveInitializeProvider>(),
+    method<&XGameSaveInitializeProviderAsync>(),
+    method<&XGameSaveInitializeProviderResult>(),
+    method<&XGameSaveCloseProvider>(),
+    method<&XGameSaveGetRemainingQuota>(),
+    method<&XGameSaveGetRemainingQuotaAsync>(),
+    method<&XGameSaveGetRemainingQuotaResult>(),
+    method<&XGameSaveDeleteContainer>(),
+    method<&XGameSaveDeleteContainerAsync>(),
+    method<&XGameSaveDeleteContainerResult>(),
+    method<&XGameSaveGetContainerInfo>(),
+    method<&XGameSaveEnumerateContainerInfo>(),
+    method<&XGameSaveEnumerateContainerInfoByName>(),
+    method<&XGameSaveCreateContainer>(),
+    method<&XGameSaveCloseContainer>(),
+    method<&XGameSaveEnumerateBlobInfo>(),
+    method<&XGameSaveEnumerateBlobInfoByName>(),
+    method<&XGameSaveReadBlobData>(),
+    method<&XGameSaveReadBlobDataAsync>(),
+    method<&XGameSaveReadBlobDataResult>(),
+    method<&XGameSaveCreateUpdate>(),
+    method<&XGameSaveCloseUpdate>(),
+    method<&XGameSaveSubmitBlobWrite>(),
+    method<&XGameSaveSubmitBlobDelete>(),
+    method<&XGameSaveSubmitUpdate>(),
+    method<&XGameSaveSubmitUpdateAsync>(),
+    method<&XGameSaveSubmitUpdateResult>(),
+    method<&XGameSaveFilesGetFolderWithUiAsync>(),
+    method<&XGameSaveFilesGetFolderWithUiResult>(),
+    method<&XGameSaveFilesGetRemainingQuota>(),
+    unknown<33>(),
+    unknown<34>(),
+    unknown<35>(),
+    unknown<36>(),
+    unknown<37>(),
+    unknown<38>(),
+    unknown<39>(),
+    unknown<40>(),
+    unknown<41>(),
+    unknown<42>(),
+    unknown<43>(),
+    unknown<44>(),
+    unknown<45>(),
+    unknown<46>(),
+    unknown<47>(),
+    unknown<48>(),
+    unknown<49>(),
+};
+
 const Object kThreading{kThreadingSlots.data()};
 const Object kError{kErrorSlots.data()};
 const Object kFeature{kFeatureSlots.data()};
 const Object kUser{kUserSlots.data()};
 const Object kUserGamertag{kUserGamertagSlots.data()};
 const Object kUserDevice{kUserDeviceSlots.data()};
+// Two objects on one vtable, so that each interface logs as itself.
+const Object kGameSave{kGameSaveSlots.data()};
+const Object kGameSave2{kGameSaveSlots.data()};
 
 // Each interface a service has, and the object that answers for it. The first row of a class
 // also answers for IUnknown.
@@ -266,13 +326,15 @@ struct Interface {
     const Object& object;
 };
 
-const std::array<Interface, 6> kInterfaces = {{
+const std::array<Interface, 8> kInterfaces = {{
     {kThreadingId, kThreadingId, kThreading},
     {kErrorId, kErrorId, kError},
     {kFeatureId, kFeatureId, kFeature},
     {kUserClassId, kUserInterfaceId, kUser},
     {kUserClassId, kUserGamertagInterfaceId, kUserGamertag},
     {kUserDeviceClassId, kUserDeviceInterfaceId, kUserDevice},
+    {kGameSaveClassId, kGameSaveInterfaceId, kGameSave},
+    {kGameSaveClassId, kGameSave2InterfaceId, kGameSave2},
 }};
 
 const Interface* row_of(const Object* self) {

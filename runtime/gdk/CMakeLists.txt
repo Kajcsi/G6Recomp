@@ -1,9 +1,11 @@
 # g6gdk: the Xbox Game Runtime APIs, written against the public GDK's surface (docs/gdk.md and
-# docs/hle-status.md): XTaskQueue, XAsync, XError, XThread, and XUser, and the xgameruntime.dll
-# entry points through which the guest reaches them, which the default import policy binds.
+# docs/hle-status.md): XTaskQueue, XAsync, XError, XThread, XUser, and XGameSave, and the
+# xgameruntime.dll entry points through which the guest reaches them, which the default import
+# policy binds.
 add_library(g6gdk STATIC
     src/async.cpp
     src/error.cpp
+    src/game_save.cpp
     src/runtime.cpp
     src/task_queue.cpp
     src/thread.cpp

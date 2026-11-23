@@ -126,6 +126,14 @@ HRESULT no_result(XAsyncBlock* async) {
     return XAsyncGetResult(async, identity<Function>(), 0, nullptr, nullptr);
 }
 
+} // namespace
+
+bool is_offline_user(XUserHandle user) {
+    return user == &g_user;
+}
+
+namespace {
+
 // ---- Privileges ----
 
 // Online privileges are denied; the rest a single-player game may check is granted.
