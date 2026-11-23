@@ -135,7 +135,7 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 | Imports | Status | Notes |
 |---|---|---|
 | `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions and the exit functions are HLE (`runtime/imports/ucrtbase`), and so are the argument functions (`runtime/imports`, "the command line", below); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
-| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`), and so are `GetCommandLineA` and `GetCommandLineW` (below) and `SetUnhandledExceptionFilter` (`runtime/loader`, above). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
+| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, psm-appnotify, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`), and so are `GetCommandLineA` and `GetCommandLineW` (below) and `SetUnhandledExceptionFilter` (`runtime/loader`, above). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
 | `api-ms-win-core-libraryloader-*` | implemented | The loader's HLE (above). The resource functions are forwarded: a guest handle is a mapped image. |
 | `api-ms-win-core-file-*` (and the same names from `kernel32`, `kernelbase`) | partial | Functions that take a handle are forwarded. The common path functions are HLE on `runtime/io` (`runtime/imports/kernelbase`). The other path functions stay stubbed: `INVALID_HANDLE_VALUE` for `CreateFile3` and the other `FindFirst` families, `INVALID_FILE_SIZE` for `GetCompressedFileSize`, zero otherwise. |
 | `api-ms-win-core-registry-*` (and the same four names from `advapi32`) | partial | Reading the console-mode key is HLE (`runtime/imports/kernelbase`, below). Everything else returns `ERROR_CALL_NOT_IMPLEMENTED` as the status. Of the mapped side DLLs only `msvcp140_atomic_wait` imports it, for the leap-second key; the GDK thunk in `XCurl` and `libHttpClient.GDK` (never mapped) imports the four HLE functions. |
@@ -143,7 +143,11 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 | `oleaut32` | forwarded | Ordinals 4 and 6 bound by name to `SysAllocStringLen` and `SysFreeString`. |
 | `xaudio2_9` | forwarded | Ordinal 1 bound by name to `XAudio2Create`. Bink's use is unverified until a video plays with sound. |
 | `xmem.dll` | partial | `runtime/imports/xmem` |
-| `d3d12_xs.dll` | stubbed | `E_NOTIMPL` until `runtime/gpu`. Only the two replaced DLLs import it. |
+| `api-ms-win-core-memory-*` | stubbed | `VirtualAlloc`, `VirtualFree`, and `VirtualQueryEx`, which the executable imports. The game uses them on its physical-page windows and placeholders (xcl, Leonida; [boot.md](boot.md)), so they become HLE through `memory_tracker`, not forwards. |
+| `d3d12_xs.dll` | partial | `D3D12ConfigureVirtualMemoryX` is HLE (`runtime/imports/d3d12_xs`): it logs the description and succeeds, since the host GPU has its own address space. Everything else is `E_NOTIMPL` until `runtime/gpu`. |
+| `gameinput.dll` | partial | Ordinal 1, `GameInputCreate`, the only import, gives a stand-in `IGameInput` with no devices (`runtime/input`): the timestamp works, and every other slot is logged once and fails with `E_NOTIMPL`. Keyboard, mouse, and gamepads come at M4. |
+| `xcrdapi.dll` | partial | DirectStorage. `DStorageGetFactory`, the only import, gives `runtime/io`'s factory ([io.md](io.md), "DirectStorage"). |
+| `AcpHal.dll`, `xapu.dll`, `chad.dll` (the audio processor), `xg_xs.dll` (texture layouts) | stubbed | `E_NOTIMPL`, since these are HRESULT APIs. `ApuMapApuAddress`, `ApuIsVirtualAddressValid`, and `XApuGetResultCount` return an address, a BOOL, and a count, so their stubs return zero with `ERROR_CALL_NOT_IMPLEMENTED`. xcl listed the DLLs a retail title loads ([related-work.md](related-work.md)). Without these rules their stubs returned zero, which an HRESULT caller reads as `S_OK`. |
 | `amd_fidelityfx_upscaler_xbox.dll`, `XboxBvhBuilder.dll` | replaced | Never mapped. Our replacements come at M3; until then imports from them are stubbed and `LoadLibrary` fails. |
 | Networking DLLs and API sets | offline | Never forwarded or mapped (hard rule 5). |
 | Anything else | stubbed | Deny by default. |
@@ -155,17 +159,21 @@ follow SlimEra's public reference ([related-work.md](related-work.md)).
 
 | Function | Status | Notes |
 |---|---|---|
-| `XMemAlloc` | partial | Heap memory type: a dedicated host heap, aligned to the larger of 16 and the requested alignment, and zeroed. Graphics and physical types log once and return null until `memory_tracker` exists. |
+| `XMemAlloc` | partial | Heap memory type: a dedicated host heap, aligned to the larger of 16 and the requested alignment, and zeroed. Graphics and physical types log once and return null until `memory_tracker` serves them. |
 | `XMemFree` | implemented | Looks the address up. Null is ignored; a pointer that isn't a live allocation is logged once and ignored, not freed. |
 | `XMemVirtualQuery` | partial | `(process, address, info)`, as the BVH builder calls it. Fills the host's `MEMORY_BASIC_INFORMATION` and, at +48, GPU access bits: bit 0 for committed, readable memory without a guard, since `memory_tracker` will be able to sync any of it. The caller accepts either of bits 0–1 as GPU memory; what each means is unknown. Bytes past +52 are never written. |
 | `XMemGetWorkingSetStatistics` | partial | `(attributes, stats)`, as the FSR upscaler calls it with a 128-byte buffer, reading +8. Writes only +0, the title's memory limit (13.5 GiB, a Series X), and +8, the process's private bytes capped at that limit; the allocator in `attributes` is ignored. The structure's size differs between GDK versions, so writing more could overrun an older caller's (xcl found this). **Reported** by Xbox2Windows: +8 is the GPU memory in use, which it reads from DXGI's `QueryVideoMemoryInfo`, counting each adapter LUID once. Not taken yet: until `memory_tracker` owns GPU memory, private bytes are the closest count. |
 | `XMemTransferMemory` | implemented | `(direction, size)`. The executable calls it once at start with 1 and 16 MiB (Leonida found the call). It succeeds and moves nothing, since a PC process has no title and system partitions to move memory between. |
+| `XMemVirtualAlloc` | partial | `(address, size, type, attributes, protection)`, through `memory_tracker`, in the forms the executable calls first ([boot.md](boot.md)). The page-size bits of `type` give the alignment. A physical reserve without commit stays a placeholder for page maps, `MEM_RESERVE_PLACEHOLDER` reserves one, and `MEM_REPLACE_PLACEHOLDER` carves the range out of an earlier one. The `PAGE_GRAPHICS_*` bits of `protection` are recorded for the GPU side and left off the host page. The attribute word (3, 7, and 0x21 seen) is logged and ignored. |
+| `XMemAllocDefault`, `XMemFreeDefault` | implemented | The same as `XMemAlloc` and `XMemFree`: the default allocator behind the allocation hooks, and we install none. |
+| `XMemIsToolsMemAvailable` | implemented | FALSE, as on a retail console. |
+| `XMemAllocatePhysicalPages`, `XMemFreePhysicalPages`, `XMemMapPhysicalPages`, `XMemMapPhysicalPagesScatter` | stubbed | FALSE or null, logged once. Our run 6 stops here ([boot.md](boot.md), "Physical pages"). |
 
 Only the BVH builder, which is replaced, imports `XMemVirtualQuery`. **Checked here:** the
 executable imports 12 xmem functions: `XMemAlloc`, `XMemFree`, `XMemGetWorkingSetStatistics`
-and `XMemTransferMemory` above, and `XMemVirtualAlloc`, the four physical-page functions
-(allocate, free, map, and scattered map), `XMemAllocDefault`, `XMemFreeDefault` and
-`XMemIsToolsMemAvailable`, which come with the first boot runs.
+and `XMemTransferMemory`, and the eight added for the first boot runs: `XMemVirtualAlloc`,
+the four physical-page functions, `XMemAllocDefault`, `XMemFreeDefault`, and
+`XMemIsToolsMemAvailable`.
 
 Reported by xbox-emulator, for when the main executable imports it: Trackmania calls
 `XMemGetWin32HeapStatistics` on the process heap, subtracts the sum of the first two fields

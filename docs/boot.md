@@ -17,17 +17,17 @@ problems, not all of them. Most of Leonida's fixes are local stand-ins, tested o
 
 | # | What stops the game | What got it further upstream | Ours |
 |---|---|---|---|
-| 1 | The first `XMemVirtualAlloc` calls: two 64 KiB reserves, then 2 MiB pages | Accepting those forms | To do: `XMemVirtualAlloc` isn't bound yet ([hle-status.md](hle-status.md)) |
-| 2 | The 2 MiB reserve-and-commit calls carry an attribute word and `PAGE_GRAPHICS_*` bits (0x800 to 0x40000) on top of `PAGE_READWRITE` | Accepting the attribute word, dropping the graphics bits and keeping the CPU protection; the seven start-up allocations then succeed | To do, the same way, with the graphics bits recorded for `memory_tracker` |
+| 1 | The first `XMemVirtualAlloc` calls: two 64 KiB reserves, then 2 MiB pages | Accepting those forms | Done: `XMemVirtualAlloc` goes through `memory_tracker` ([hle-status.md](hle-status.md)) |
+| 2 | The 2 MiB reserve-and-commit calls carry an attribute word and `PAGE_GRAPHICS_*` bits (0x800 to 0x40000) on top of `PAGE_READWRITE` | Accepting the attribute word, dropping the graphics bits and keeping the CPU protection; the seven start-up allocations then succeed | Done, the same way: `memory_tracker` records the graphics bits with the range |
 | 3 | The Game Runtime's import thunks treat a missing `XErrorReport` as fatal | Providing it | Done: our `xgameruntime.dll` has it ([gdk.md](gdk.md)) |
 | 4 | The game's allocator reads its static TLS from module index 0 (it is built with `/GA`) | Giving the executable index 0 | Done: the runner links `g6exetls` ([execution-model.md](execution-model.md), "TLS and the TEB") |
-| 5 | A fatal assert when `DStorageGetFactory` returns null | A DirectStorage factory | To do: `runtime/io` |
-| 6 | `XMemAllocatePhysicalPages` is missing, and the game asserts when it returns FALSE | A CPU-only stand-in (below) | To do |
+| 5 | A fatal assert when `DStorageGetFactory` returns null | A DirectStorage factory | Done: `runtime/io` serves the factory, files, queues and status arrays ([io.md](io.md), "DirectStorage") |
+| 6 | `XMemAllocatePhysicalPages` is missing, and the game asserts when it returns FALSE | A CPU-only stand-in (below) | Next: our run 6 stops here too |
 | 7 | `D3D12XboxCreateDevice` succeeds, then device slot 26 is called with the return buffer first | Swapping the first two arguments (below) | M3: `runtime/gpu` |
 | 8 | Device slot 48 is forwarded to the PC's slot 48, which is something else | Creating a command queue (below) | M3 |
 | 9 | Device slot 73 is forwarded to the PC's slot 73, and the game then reads through a null list | Creating a command list (below) | M3 |
-| 10 | An `XMemVirtualAlloc` reserve of about 185 MiB, with allocation type `0x42000`, attribute 7 and `PAGE_NOACCESS`, fails with `ERROR_INVALID_PARAMETER` | Reading `0x40000` as `MEM_RESERVE_PLACEHOLDER`, which only `VirtualAlloc2` accepts, and reserving a placeholder | To do |
-| 11 | The game carves five ranges out of that placeholder with `MEM_RESERVE \| MEM_REPLACE_PLACEHOLDER \| MEM_PHYSICAL \| MEM_LARGE_PAGES` (`0x20406000`), then allocates more physical pages | A physical reserve inside a placeholder stays a placeholder, which page maps split later; any other replacing reserve splits the placeholder and allocates the range in place | To do |
+| 10 | An `XMemVirtualAlloc` reserve of about 185 MiB, with allocation type `0x42000`, attribute 7 and `PAGE_NOACCESS`, fails with `ERROR_INVALID_PARAMETER` | Reading `0x40000` as `MEM_RESERVE_PLACEHOLDER`, which only `VirtualAlloc2` accepts, and reserving a placeholder | Done in `memory_tracker`, not reached yet |
+| 11 | The game carves five ranges out of that placeholder with `MEM_RESERVE \| MEM_REPLACE_PLACEHOLDER \| MEM_PHYSICAL \| MEM_LARGE_PAGES` (`0x20406000`), then allocates more physical pages | A physical reserve inside a placeholder stays a placeholder, which page maps split later; any other replacing reserve splits the placeholder and allocates the range in place | Done in `memory_tracker`, not reached yet |
 | 12 | Device slot 133 is called through a proxy vtable of 128 slots, so it jumps through a null pointer | A 192-slot table and a stand-in for slot 133 (below) | M3 |
 | 13 | Right after the first `CreateDescriptorHeap`, the game calls the heap's slot 9 (`GetCPUDescriptorHandleForHeapStart` on the PC) and asserts that the handle equals a value it already holds | Open. Leonida's guess: a console descriptor heap starts at an address the game chose or can predict | M3 |
 
@@ -57,11 +57,23 @@ The call shapes, as Leonida read them from the call sites and the checks after t
   per page.
 * `XMemFreePhysicalPages(page_count, page_array)` frees them.
 
-Leonida's stand-in is CPU only: one pagefile-backed section per 64 KiB page, with page numbers
-that index a table of those sections. The physical reserve is a placeholder; each map splits
-the placeholder and maps the page's section into it with `MapViewOfFile3`, and each unmap puts
-the placeholder back. That is also the plan here, with the sections owned by `memory_tracker`
-so the GPU side can follow at M3.
+Later findings change the backing ([related-work.md](related-work.md)):
+
+* **Page numbers.** xcl and Leonida (`042c5f37`) agree that a page number counts 4 KiB frames:
+  a 64 KiB page's number is a nonzero multiple of 16, and 0 in a map call unmaps that page. The
+  game stores numbers shifted right by 4 and checks they stay below 2^25.
+* **Scale.** xcl saw about 93,000 pages, about 5.7 GiB, allocated in one call, so a section per
+  page is too many. Leonida now backs each allocation call with one pagefile-backed section and
+  maps each page as its own view (`MapViewOfFile3` into a 64 KiB piece of the placeholder), so a
+  page keeps its contents across remaps and can be mapped at two addresses.
+* **Protection.** A mapped page takes the protection of the window it lands in. Two windows the
+  game reserves are `PAGE_NOACCESS`, and their pages still have to be readable and writable.
+* **Release.** The game frees its windows with plain `VirtualFree`, and splits and coalesces
+  placeholders itself with `VirtualAlloc` and `VirtualFree` (xcl). Those imports have to go
+  through `memory_tracker` too, and the first placeholder has to lie below 4 GiB.
+
+That is the plan here, with the sections and the page table owned by `memory_tracker` so the
+GPU side can follow at M3.
 
 ### D3D12 device calls that differ from the PC
 
@@ -81,11 +93,28 @@ For `runtime/gpu` at M3 ([d3d12x.md](d3d12x.md)):
   just reserved, with a description of that range's size, console bits in its flags above the
   PC's, and an initial state of `0xFFFFFFFF`, which the PC doesn't define. Its shape matches the
   console's `CreatePlacedResourceX`. A real version has to back the resource with the pages at
-  that address.
+  that address. Correction (xcl, Xbox2Windows): `0xFFFFFFFF` is a layout, not a state. It is
+  `D3D12_BARRIER_LAYOUT_UNDEFINED`, so the call uses the enhanced-barrier form.
 * A proxy vtable has to be longer than the highest slot the game calls. A short one leaves a
   null pointer, not an error.
 
 ## Our runs
 
-None yet. The first comes with `XMemVirtualAlloc` and the physical-page functions: each run
-goes as far as it can with `--skip-int3`, and its first stop is recorded here.
+**Checked here.** Each run goes as far as it can with `--skip-int3`, on Windows 11 with the
+debug build. The table gives what each run stopped on and what came before the next one. The
+logs stay in `private/runs/`.
+
+| Run | First stop | What came next |
+|---|---|---|
+| 1 | `D3D12ConfigureVirtualMemoryX` and `XMemVirtualAlloc` are unbound, and the game crashes on the null result | `D3D12ConfigureVirtualMemoryX` logs its block and succeeds. The block is zero apart from the DWORD at +4, which is 4 here. The two reserves that follow are 24 GiB each, of type `0x20402000` (without commit), with attribute and protection words 0x21 and 4, then 3 and 0x801, as Xbox2Windows reported (checked at debug level on run 6). Then come 2 MiB-page commits. `XMemVirtualAlloc` goes through `memory_tracker` |
+| 2 | The app-state notification functions (`api-ms-win-core-psm-appnotify`) are unbound | Forwarded to the host |
+| 3 | `GameInputCreate` (GameInput ordinal 1) is unbound, and the game asserts | A stand-in `IGameInput` with no devices: slot 3, the timestamp, works, and every other slot is logged and fails |
+| 4 | `DStorageGetFactory` is unbound, and the game asserts (Leonida's stop 5). It called `IGameInput` slot 9 first and went on after the failure | A stand-in factory |
+| 5 | The factory's slot 8 (`SetStagingBufferSize`, 32 MiB) and slot 4 (`OpenFile`) fail; the game asserts after each, then crashes in `memset` with a null destination | The factory, files, queues and status arrays of [io.md](io.md), "DirectStorage" |
+| 6 | `XMemAllocatePhysicalPages` is unbound (Leonida's stop 6); after the assert the game reads through a null pointer | The physical-page functions (above) |
+
+From run 2 on, the game also asks `QueryApiImpl` for Game Runtime services we don't serve yet:
+XNetworkingImpl, XGameImpl, XSystemImpl, XSystemAnalyticsImpl, and services `af406016`,
+`f4faf4d4` and `03f0fe74`. It also asks XUserImpl for the class ID as an interface. Each miss is
+logged and reported through `XErrorReport`, and the game goes on. Run 6 also called
+`RegisterClassExA`, which is still a stub, before its stop.

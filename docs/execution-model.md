@@ -93,7 +93,10 @@ The loader (`g6::loader::Loader`):
    frames, because the calling convention and unwind format are identical.
 4. **Sets up static TLS** (see below).
 5. **Sets the security cookie** in the load config to a random value with the top 16 bits
-   clear, as the Windows loader does, and **leaves CFG alone**. The guest's check and dispatch
+   clear, under the Windows loader's conditions as Xbox2Windows measured them: the load-config
+   directory and its `Size` both reach 0x70, `GuardFlags` lacks
+   `IMAGE_GUARD_SECURITY_COOKIE_UNUSED` (0x800), and the slot still holds the linker's default. A
+   value the image seeded itself is kept. It **leaves CFG alone**. The guest's check and dispatch
    pointers keep their default no-op routines. Still open: neither the tests nor `g6recomp.exe`
    are built with CFG enforced; if the runner ever is, host code calling guest callbacks may need
    the guest's code marked as valid call targets.

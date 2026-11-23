@@ -114,9 +114,13 @@ probably uses more of it.
     callbacks (`BinkSetMemory`) and the callback returns null, Bink falls back to `XMemAlloc`.
 * **Graphics and physical memory types.** Not before `memory_tracker` exists. Log once and
   return null, an honest failure rather than CPU memory the GPU can't see.
-* **`XMemSetAllocationHooks`.** In SlimEra, `XMemAlloc` and `XMemFree` go through hooks a
-  title can install. If the executable installs its own allocator, Bink's allocations have to
-  reach it. Implemented when the executable imports it, stub first.
+* **The title's allocation hooks.** In SlimEra, `XMemAlloc` and `XMemFree` go through hooks a
+  title can install. The executable doesn't import `XMemSetAllocationHooks`. It exports a data
+  symbol instead, `__XMemAllocationHooks__`, its only export, which holds its allocate and free
+  functions (**checked here**: two pointers into `.text`, one into `.rdata`, then zero). xcl
+  reports that the console's D3D runtime takes descriptor heaps and display targets from those
+  hooks ([related-work.md](related-work.md)). Whether Bink's allocations go through them too is
+  open. The loader reads the symbol when it maps the executable, once something needs it.
 * **Other xmem functions.** `XMemGetWorkingSetStatistics`, `XMemVirtualQuery`, and the rest
   stay stubs until something we map calls them. **Reported:** the upscaler treats a failed
   statistics call as zero, so a stub is safe there.

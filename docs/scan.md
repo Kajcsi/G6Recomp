@@ -249,7 +249,8 @@ These are **checked here**, on `game_scarlett_master.exe`:
   host CPU" in [execution-model.md](execution-model.md)). Five extensions Zen 2 has but
   some hosts lack also appear: ADX (2,611 sites), CLWB (8), SSE4a (19), CLZERO (10), and MONITORX
   (4). Whether a feature check guards them isn't known yet. The last three are AMD-only, so an
-  Intel host would fault at any of them that runs. The fixes are listed under "CPU features" in
+  Intel host would fault at any of them that runs. **Reported** by xcl: the MONITORX sites run,
+  as waits on a fence's completed value ([related-work.md](related-work.md)). The fixes are listed under "CPU features" in
   [execution-model.md](execution-model.md).
 * **C++ exception handlers**: 596 functions have a handler: 162 FH3, 353 FH4, 135 through a GS
   wrapper, 77 under a stack cookie check alone, and 4 others. Every table reads. Of the 59

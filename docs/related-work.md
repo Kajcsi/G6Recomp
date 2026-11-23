@@ -29,7 +29,7 @@ functions to C++, one at a time, and checks each against the original. We run gu
 natively. So its translators don't carry over, but its measurements of the package and of
 desktop D3D12 do.
 
-**Last reviewed: commit `2aa81a2` (2026-11-23).** No code has been copied. If code is ever
+**Last reviewed: commit `ec5d004` (2026-11-24).** No code has been copied. If code is ever
 copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES.md).
 
 ### Taken
@@ -116,6 +116,12 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | When two products are NaN, which NaN `dpps` and `dppd` return is vendor-defined, so an Intel host can differ from Zen 2 though `cpuid` masking makes the feature bits the same (`e2526e1`) | Reported | [execution-model.md](execution-model.md) |
 | The 24-bit MAD truncates both multiplicands (`ee5535a`) | Reported. Agrees with the integer row above | Later: `shaderrecomp` (M3) |
 | Intel UHD drivers 32.0.101.7026 and .7092 got emulated 64-bit (`uint2`) arithmetic wrong inside a large shader, where the same operation alone was exact (`688aa85`) | Reported | [shaders.md](shaders.md) |
+| `D3D12ConfigureVirtualMemoryX` is called once before the device, with a 32-byte block that is zero but for a DWORD at +4 (3 or 4). A failure only breaks into the debugger. Two reserves of type `0x20402000` follow whatever the result, 16 GiB each for 3 and 24 GiB for 4, with attribute and protection words 0x21 and 4, then 3 and 0x801 (`6eb3341`, `9adf97c`) | Checked on our run 6 at debug level: the DWORD is 4, the reserves are 24 GiB each, and the words are as stated. Ours logs the block and succeeds | [boot.md](boot.md), "Our runs" |
+| `XMemAllocatePhysicalPages(flags, count*, pages)` and `XMemFreePhysicalPages(count, pages)` return BOOL. The count is in 64 KiB pages, in and out, and unchanged on success. That much comes from Microsoft's public GDK samples; the flag check (only `0x20400000`), the all-or-nothing rule, and whole-grant release are their own policy (`729bfa1`, `d0bf29a`) | Shapes reported, and they agree with Leonida's measurements. The flag check is not taken: Leonida saw the game pass 0x280 and 0x380 | [boot.md](boot.md), "Physical pages" |
+| Windows 11 seeds an x64 image's `/GS` cookie only when the load-config directory and its `Size` are both at least 0x70, `IMAGE_GUARD_SECURITY_COOKIE_UNUSED` (0x800) is clear, and the slot holds the linker's default. A pre-seeded value is kept (`62c7536`) | Taken, our own code: the loader follows the same three conditions (`test_loader`, with patched copies of an original fixture) | [execution-model.md](execution-model.md), step 5 |
+| Windows 10 calls two TLS callbacks in table order and then the entry point on every notification, and gives each thread a fresh copy of a template that crosses a page (`02cd2ac`, `54b6781`) | Reported. Our loader does the same; no fixture has two callbacks yet | [execution-model.md](execution-model.md) |
+| `XMemAllocDefault` and `XMemFreeDefault` take `XMemAlloc`'s and `XMemFree`'s arguments and share their allocator; `XMemIsToolsMemAvailable` is `BOOL (void)`, FALSE on retail (`713c3ba`, `8e85283`) | Taken: ours does the same | [hle-status.md](hle-status.md) |
+| Returning LDS updates write the word's value from before the update, with the inputs read first since the destination may overlap them; `ds_rsub_u32`, and signed or unsigned min and max; `v_mul_lo_u32` is the low 32 bits of the full product; f16 floor, ceil, trunc and round-to-even go exactly through f32 and keep the sign of zero (`daf87ee`, `80c4d6e`, `a329153`, `cc09358`, `8872308`) | Reported, from AMD's ISA reference and tests on desktop GPUs, not RDNA 2 | Later: `shaderrecomp` (M3) |
 
 ### Not taken
 
@@ -160,10 +166,13 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
   (quad-perm `ds_swizzle`, `ds_nop`, FLAT scratch, which GTA VI doesn't use, dot products,
   carry-in adds); compute LDS lowering; disassembler and tooling changes; archive-texture
   fixtures; and README and disclaimer edits.
+* **Its changes at `ec5d004` with nothing for us:** the physical-page registry (bookkeeping
+  with no memory behind it), the package import-closure tool, stack outputs through imports, and
+  the static translator's AVX, x87 (including BCD), and fuzzing work.
 
 ### Next review
 
-1. Run `git log 2aa81a2..origin/main` in a scratch clone outside the repo.
+1. Run `git log ec5d004..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/experiments.md` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -183,7 +192,7 @@ code can be ported with its notices kept. Little of it fits as it is, though: it
 Python and its translator emits SPIR-V. We take its measurements as facts, check them on our
 copy, and port code only where it fits our design.
 
-**Last reviewed: commit `86fd2fda` (2026-11-23).** No code has been copied yet. Upstream's
+**Last reviewed: commit `976b3ec9` (2026-11-23).** No code has been copied yet. Upstream's
 `57c17539` reverts its console-ABI command-list proxy, import routing, and two console-ABI
 documents; the revert is for broken tests, so the facts from them below still stand.
 
@@ -310,6 +319,12 @@ documents; the revert is for broken tests, so the facts from them below still st
 | A NaN made on x86 or RDNA is 0xFFC00000 but 0x7FC00000 on ARM64 (`ea2cf301`); D3D12 can't `Sample` integer SRVs, so sampling integer formats goes through derivatives and a matching view (`64890ac2`) | Reported | [shaders.md](shaders.md) |
 | The executable calls `XMemTransferMemory` once at start with direction 1 and 16 MiB | Taken: ours succeeds and moves nothing | [hle-status.md](hle-status.md) |
 | A closed `XGameSave` container stays expired when its address is reused (`2cc83a80`) | Taken, our own code: our handles were object addresses, so a stale one could validate again. Handles are now values in reserved address space, never handed out twice, and each call holds the object it found (`test_game_save`) | [gdk.md](gdk.md), "XGameSave" |
+| The four physical-page functions, measured at the title's call sites: allocate `(attributes, count*, pages)` with a count of 64 KiB pages, in and out, freed by the caller on a mismatch; free `(count, pages)`; map `(address, count, pages)` returning the address, where a null array unmaps `count` pages and a 0 entry one page; scatter `(addresses, UINT32 count, pages)`. Page numbers are 4 KiB frame numbers, nonzero multiples of 16 below 2^25. One section per allocation, one view per page; a page takes its window's protection, and pages in `PAGE_NOACCESS` windows get read-write views (`042c5f37`) | Reported (measured). To port into `memory_tracker`: our run 6 stops at the first allocation | [boot.md](boot.md), "Physical pages" |
+| The title releases its page windows with plain `VirtualFree`, which an xmem shim doesn't see (`042c5f37`, inferred from overlapping reservations) | Reported. Agrees with xcl's row. Our `VirtualFree` is a stub, and becomes HLE through `memory_tracker` | [hle-status.md](hle-status.md) |
+| `QueryApiImpl` classes: `37e56907` XNetworkingImpl, `973a344e` XGameImpl, `e349bd1a` XSystemImpl, `b884675d` XSystemAnalyticsImpl, `01acd177` XUserImpl, `8836fe87` XGameRuntimeFeatureImpl. Each class ID is also its base interface's ID, and one vtable answers every derived interface. XUserImpl's IDs run `01acd177`, `eb9bf948`, `1bf2f8c5`, `079415e3`, `26f3c674`, `5131d685` | Reported. Our runs ask for the first five and three classes Leonida doesn't serve (`af406016`, `f4faf4d4`, `03f0fe74`); we accept only `26f3c674` for XUser. Next for `runtime/gdk`, offline where it touches networking | [boot.md](boot.md), "Our runs" |
+| `DllMain` gets a non-null `lpvReserved` on process attach for modules loaded at start, and null for `LoadLibrary` loads (`e0816d6a`) | Reported (from Microsoft's documentation). Ours always passes null; a loader change with a fixture test, to do | [execution-model.md](execution-model.md) |
+| A signalling NaN stays signalling through `abs` and `neg` on `v_min` and `v_max`; a wave sees its own LDS writes in order without a barrier, which one AMD driver broke; `*_atomic_csub` subtracts clamped at zero; packed 16-bit `clamp` does nothing on multiply, min, and max; `s_bfm_b64` gives data, not a lane mask; a uniform value in a wave32 program on a 64-wide host comes from a lane of its own half; inactive lanes skip `image_atomic_*` (`07f81e76`, `0433058a`, `5dc7bb38`, `bc773d30`, `e0a8293f`, `4ce16cd5`, `f469596f`) | Reported; the csub, packed-clamp, and LDS-order rows are measured on AMD GPUs | Later: `shaderrecomp` (M3) |
+| Wine before 10.1 laid out `_Mtx_t` differently, so a host `/MD` binary's timed condition-variable wait under Wine 9 never releases its mutex and runs out its timeout (`ee56bf93`) | Reported (measured). Later, for our host binaries under Proton (M5); the guest uses the console's own C++ runtime | [execution-model.md](execution-model.md) |
 
 ### Not taken
 
@@ -362,10 +377,14 @@ documents; the revert is for broken tests, so the facts from them below still st
   audio, navmesh, world, peds, PSIN, texture detiling, the RPF dump tool), of which only the
   48-byte page fact is kept; the harness that runs xcl's binaries for comparison; and CLI,
   build, launcher, translation and README changes.
+* **Its changes at `976b3ec9` with nothing for us:** device slots 78 to 80 as frame-interval
+  and frame-event methods, whose source is another project of unknown provenance (our own run
+  will show them at M3); its Vulkan validation and barycentric fallback; the XMA2 crate (FFmpeg's
+  C decoder is the more direct source at M4); and its asset, BVH, and tooling changes.
 
 ### Next review
 
-1. Run `git log 86fd2fda..origin/main` in a scratch clone outside the repo.
+1. Run `git log 976b3ec9..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -547,8 +566,9 @@ licence to version 3 (`CLAUDE.md`), and nothing here needs its code. We wrote ou
 `shaderrecomp pscache` ([shaders.md](shaders.md)), from the layout it reports.
 
 **Last reviewed: commit `5f2726c` (2026-11-22).** No code has been copied. On 2026-11-23 the
-repository was no longer reachable ("Repository not found"), so there was nothing new to
-review; the findings below stand as recorded.
+repository came back with its history replaced by one commit, `39a9145`, which holds only a
+notice that the project has closed. There is nothing new to review; the findings below stand as
+recorded.
 
 ### Taken
 
@@ -610,7 +630,7 @@ understanding of the behaviour. We never translate its code. The permissive thir
 material it carries (AMD's ISA and addrlib tables, LLVM's test vectors) we take from upstream
 when we need it.
 
-**Last reviewed: commit `484dd57` (2026-11-23).** No code has been copied.
+**Last reviewed: commit `db5dc26` (2026-11-23).** No code has been copied.
 
 ### Taken
 
@@ -699,6 +719,16 @@ design depends on them:
 | GameInput's `UnregisterCallback` waits for a call still running, and mustn't deadlock from inside the callback; `QueryInterface` answers only the v0 interface IDs; `XInputGetState` on an empty slot asks the driver every time, so empty slots are polled at most once a second; keyboard input by physical scancode works on AZERTY layouts, and is reset when the window loses focus | Reported | Later: `runtime/input` (M4, keyboard and mouse) |
 | Video-memory arenas: a later placement can straddle an existing arena, so each title address must map to one backing heap; xcl merges overlapping arenas (`70d7e0a`). Queue slot 18 is `GetDesc` (16 bytes through a hidden return pointer) in the older layout and `GetTimestampFrequency` (8 bytes) in the newer, and can come before the first `Signal` (`a01d61c`). Call the native `Reset` before dropping a list's tracked state, since a failed one keeps the old recording (`c806a0b`). Frame statistics for a token carry that frame's own origin time with 2 to 3 frames in flight (`23c53fc`) | Reported | [d3d12x.md](d3d12x.md) |
 | Memory windows: picking one from a 64-bit address must include the carry out of the low dword (a fix reverted because AMD's shader compiler crashed on one large program); HLSL 2021's `?:` short-circuits into a branch, so use `select()`; mesh and geometry programs need the windows too. DXC: programs translated with program-counter loops (13–17%) take 53–75% of compile time, a compile peaks at 0.6–0.7 GB, and workers stay at normal priority. At start it checks SM 6.6, the mesh tier, the wave width and DXC (`a787c52`, `70f8dc4`, `07f12e8`, `3304bb1`, `56fa1dc`, `8ba374c`) | Reported | [d3d12x.md](d3d12x.md), [shaders.md](shaders.md) |
+| A physical page's number counts 4 KiB frames: a 64 KiB page's number is a nonzero multiple of 16, and 0 unmaps. In `XMemMapPhysicalPagesScatter(addresses, count, pages)`, a 0 entry unmaps that one address (`9add721`) | Reported. Agrees with Leonida's measurement; taken with the physical pages | [boot.md](boot.md), "Physical pages" |
+| The title allocates about 5.7 GB of physical pages at once and maps them into a reservation of about 6 GB of its own (`66e8e97`) | Reported (measured on its run). So pages are backed one section per allocation call, not one per page | [boot.md](boot.md), "Physical pages" |
+| The title manages placeholders through `VirtualAlloc` and `VirtualFree`: it splits one with `MEM_RELEASE` and `MEM_PRESERVE_PLACEHOLDER`, replaces each piece with a physical reserve, returns pieces to placeholders, and coalesces them. Its first placeholder starts with its view descriptor heap, which shaders address with 32 bits, so placeholders go below 4 GiB (`9add721`) | Reported. **Checked here:** the executable imports `VirtualAlloc`, `VirtualFree`, and `VirtualQueryEx` from the memory API set, which is still stubbed; they become HLE through `memory_tracker` | [boot.md](boot.md), [hle-status.md](hle-status.md) |
+| The executable exports `__XMemAllocationHooks__`, the title's allocate and free functions. The console's D3D runtime takes descriptor heaps and display targets from it, and the game asserts that a heap starts at the memory its hook gave (`9add721`) | **Checked here:** it is the executable's only export, in `.data`: two pointers into `.text`, one into `.rdata`, then zero. It explains Leonida's stop 13. At M3 those objects are built at the hook's memory | [side-dlls.md](side-dlls.md), [boot.md](boot.md) |
+| `chad.dll` is XDsp, the audio processor's DSP. The game stops at a breakpoint when `XDspConnectWithMaximumStreamLimit` fails (`66e8e97`) | **Checked here:** the executable imports five XDsp functions. They are honest `E_NOTIMPL` stubs for now, with `AcpHal.dll`, `xapu.dll`, and `xg_xs.dll`; before, their stubs returned zero, which reads as `S_OK` | [hle-status.md](hle-status.md) |
+| The newer DirectStorage factory (`62959d11-…`) and queue (`3c02cb0c-…`): factory slots 3 to 8, and 10 with a 0x20-byte description; queue, file, and status array slots; the 0x48-byte request and 0x290-byte error record (`9add721` and its earlier notes) | Taken, our own code: `runtime/io` serves those slots (`test_io`). The names of the request options bits come from the console SDK's header, so they are not taken | [io.md](io.md), "DirectStorage" |
+| The game's crash reporter sends a minidump to an outside server at every crash, over WinHTTP and Winsock (`9add721`) | Reported. Rule 5 already covers it: those imports bind offline here | [hle-status.md](hle-status.md) |
+| Fence slot 12 in the newer layout returns the address of the fence's completed value, which the title waits on with `monitorx` and `mwaitx` (`9add721`) | Reported. Our scan's 4 MONITORX sites; this host lacks MONITORX, so they need emulating on Intel | [scan.md](scan.md) |
+| GTA VI uses the newer D3D12.X layout. Device slots 70 and 71 make views of memory with no resource, 108 is `GetResourceAllocationInfo2`, and 127 and 133 take a barrier layout where the PC takes a state. Compute queues come with flags 2 and 3, list slot 139 is `Reset` with one more argument, full-screen passes use rect lists (topology 17, type 19), and pipeline streams may lack a topology type (`9add721`, `66e8e97`) | Reported. Later (M3) | [boot.md](boot.md), slot 133 |
+| During loading the game creates about 3,500 shaders, 2,076 of them compute; a mesh program can sit in a stream's AS subobject (`db5dc26`) | Reported. Later: `shaderrecomp` (M3) | [shaders.md](shaders.md) |
 
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".
@@ -734,10 +764,14 @@ setting is simpler.
 * **Its changes at `484dd57` with nothing for us:** Ogg Opus trimming (GTA VI's AWC Opus
   streams are raw packets), issue templates, and precompile tooling. Its held f16
   directed-rounding change fails its own GPU test, so there is nothing to take from it yet.
+* **Its changes at `db5dc26` with nothing for us:** the 1D and 3D texture layouts and
+  `XGSuggestSwizzleMode`'s choice, checked against the console's texture-layout library (console
+  SDK material); the names of DirectStorage's request options, from the console SDK's header;
+  game shader names in its notes; and its trace and dump switches.
 
 ### Next review
 
-1. Run `git log 484dd57..origin/main` in a scratch clone outside the repo.
+1. Run `git log db5dc26..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `HANDOFF.md` and `docs/specs/` for facts, written up in our own words.
 3. Add each new finding to the tables above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.

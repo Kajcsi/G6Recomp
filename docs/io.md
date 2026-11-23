@@ -137,6 +137,51 @@ the console uses is still unknown. A name cut to fit a fixed field, such as `cFi
 `WIN32_FIND_DATAA`, ends after a whole character, so a double-byte or UTF-8 sequence is never
 split (`g6::narrow_prefix`, tested by `test_text`).
 
+## DirectStorage
+
+The executable imports one function from `xcrdapi.dll`, the console's DirectStorage:
+`DStorageGetFactory`. It asserts unless it gets a factory, and in our run 5 it went on to call
+the factory's staging-size and file-opening slots ([boot.md](boot.md), "Our runs").
+`runtime/io/src/direct_storage.cpp` provides the factory and the objects it makes.
+
+**Where the facts come from.** The console's interfaces have PC DirectStorage's methods, in
+another vtable order and with other structure layouts. The slots and layouts here come from
+xcl's observations of a retail title ([related-work.md](related-work.md)), checked against what
+our runs call, with the public PC `dstorage.h` for the methods' names and meaning. xcl also gives
+the bits of the request options word, but cites them from the console SDK's own header, so they
+are not taken here. The options this executable sends will be logged and read from its own
+behavior instead.
+
+| Object | Slots | Notes |
+|---|---|---|
+| Factory | 3 `CreateQueue`, 4 `OpenFile`, 5 `CreateStatusArray`, 6 `SetCpuAffinity`, 7 `SetDebugFlags`, 8 `SetStagingBufferSize`, 10 `CreateQueue` with a longer description | One factory for the process. The executable asks for 32 MiB of staging (slot 8); the size, affinity, and debug flags are logged and accepted, since reads go straight to the destination. |
+| File | 3 `Close`, 4 `GetHandle`, 7 `GetId` | Opened read-only (sharing read and delete) on the host path of a mounted console path, so it reads what the guest's own `CreateFile` would. `GetHandle` gives a duplicate the caller closes. |
+| Queue | 3 `EnqueueRequest`, 4 `EnqueueStatus`, 5 `EnqueueSignal`, 6 `Submit`, 7 `CancelRequestsWithTag`, 8 `Close`, 9 `GetErrorEvent`, 10 `RetrieveErrorRecord`, 11 `Query` | Its description gives the source type (file or memory), the capacity, the priority, and a name. |
+| Status array | 3 `IsComplete`, 4 `GetHResult` | Each entry starts as `E_PENDING`. |
+
+Every other slot is a stand-in stub that logs once and returns `E_NOTIMPL`
+(`g6/com_stand_in.h`). An object goes away on its last `Release`.
+
+**What runs.** A queue keeps what is enqueued until `Submit`, or until it holds as many entries
+as its capacity, and then runs them in order on the submitting thread:
+
+* A request with an options word of zero is a plain read: `source_size` bytes from the file at
+  `offset`, or from memory on a memory queue, into the destination. The destination must be
+  writable and at least that large.
+* A status entry takes the first failure since the previous status entry, or `S_OK`.
+* `CancelRequestsWithTag` drops pending requests whose tag matches under the mask.
+* `Close` drops what is pending, and its status entries get `ERROR_OPERATION_ABORTED`.
+* A failure is counted, the first one is kept for `RetrieveErrorRecord` with its HRESULT and
+  command type, and the error event is set.
+
+**What doesn't run yet.** A request with any options bit set, which includes every compressed
+one, fails with `E_NOTIMPL`. It is logged once per options value, with its fields and the first
+four bytes of its source, so the formats can be identified from what the executable sends. The
+console decodes some of them in hardware, and their software decoders belong here too (CLAUDE.md,
+"I/O"). Fence signals (`EnqueueSignal`) also fail with `E_NOTIMPL` until `runtime/gpu` has
+fences. Requests run synchronously; a worker thread and PC DirectStorage can come when loading
+times matter.
+
 ## Known differences
 
 * A mount's root is a host directory, not a drive's root, so a search for `G:\*` lists `.` and
@@ -175,3 +220,7 @@ split (`g6::narrow_prefix`, tested by `test_text`).
   opening, creating, and deleting files; access denied on the read-only mount; directory
   searches; attributes; moves and copies; the temp path; full paths; and the current directory.
 * `test_side_dlls` (local) still initializes all 12 mapped side DLLs under the new policy.
+* `test_io` (CI) also covers DirectStorage: the factory's interfaces and settings, files opened
+  read-only (a missing file, an unmounted drive, a wrong interface ID, the duplicated handle),
+  a request that reads and completes its status, a failure's status, event, and error record,
+  cancelled requests that never run, a full queue that submits itself, and a memory queue.
