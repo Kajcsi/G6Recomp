@@ -29,7 +29,7 @@ functions to C++, one at a time, and checks each against the original. We run gu
 natively. So its translators don't carry over, but its measurements of the package and of
 desktop D3D12 do.
 
-**Last reviewed: commit `8370c17` (2026-11-23).** No code has been copied. If code is ever
+**Last reviewed: commit `275c399` (2026-11-23).** No code has been copied. If code is ever
 copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES.md).
 
 ### Taken
@@ -99,6 +99,8 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | On an RX 9070 XT (driver 32.0.32015.7029), `CommittedRayT()` came back as the true distance plus TMin for 43 of 126 rays | Reported (an earlier upstream pull request, missed by the review before) | Later: `runtime/gpu` (M3) |
 | Translation rules drawn bit-exact on an RTX 3060 or 4060 and WARP, from AMD's reference, LLVM, or Mesa: `v_bfe_u32`, `v_bfe_i32` and `v_bfm_b32` take the low five bits of offset and width, so a width of 32 is 0; `v_ffbh`/`v_ffbl` keep the all-ones result for no bit found; `v_cvt_pk_u16_u32` and `v_cvt_pk_i16_i32` put src0 in the low half and saturate (the saturation from Mesa, the ISA leaving it open); `v_sad_hi_u8`, `v_sad_u32` and `v_msad_u8` are unsigned and wrap at 2^32, and `v_msad_u8` skips byte lanes whose src1 byte is zero; `v_add_co_u32` and the subtracting forms take their carry rules from LLVM; `image_sample` with a partial `dmask` packs the enabled channels into consecutive VGPRs in RGBA order; `v_readfirstlane_b32` becomes `WaveReadLaneFirst` only for a source proven uniform | Reported, none measured on the console. Checked against our name tables: the packing conversions, the SADs, `v_bfe` and `v_add_co_u32` are VOP3-only opcodes there, as upstream says gfx10 has them | Later: `shaderrecomp` (M3) |
 | Windows 10's in-box WARP (10.0.19041.5794) picks mip 1 for a per-sample `MinLod` clamp of 1.5625 under point mip filtering, where `SampleLevel` at the same LOD picks mip 2; linear mip filtering blends as expected | Reported, on that one adapter: a host difference, not a claim about the console | [shaders.md](shaders.md) |
+| Creating a mesh pipeline takes much longer as the mesh shader grows, compiling with DXC's `-Od` doesn't reliably shorten it, and WARP crashed creating some of the larger ones. Measured on an RTX 5080, a Radeon integrated GPU, and WARP, with generated shaders | Reported. Adds to the pipeline-time rows: GTA VI has 8,765 mesh shaders | Later: `shaderrecomp` (M3) |
+| `v_cvt_flr_i32_f32` and `v_cvt_rpi_i32_f32` lower to a plain HLSL conversion only where the input is proven finite and in range, since HLSL leaves the conversion of other values undefined | Reported | Later: `shaderrecomp` (M3) |
 
 ### Not taken
 
@@ -131,10 +133,15 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
   out (hard rule 2).
 * **The TTPF batch DDS exporter,** and the Rust BCPack kernels added for it. An asset exporter,
   so it stays out whatever its licence.
+* **Its translator coverage at `275c399`:** `pixel_aot` lowerings for the 16-bit three-operand
+  integer operations, `v_mul_lo_u32`, Wave32 `exec_lo` operations, and `image_sample_lz`, `_l`
+  and `_b`, a small integer ALU subset between a compute read and its store, and a further
+  hardware BVH report. They extend its own translator, which doesn't carry over; the rules
+  behind them are AMD's public ones.
 
 ### Next review
 
-1. Run `git log 8370c17..origin/main` in a scratch clone outside the repo.
+1. Run `git log 275c399..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/experiments.md` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -154,7 +161,9 @@ code can be ported with its notices kept. Little of it fits as it is, though: it
 Python and its translator emits SPIR-V. We take its measurements as facts, check them on our
 copy, and port code only where it fits our design.
 
-**Last reviewed: commit `3faac557` (2026-11-23).** No code has been copied yet.
+**Last reviewed: commit `561b65a8` (2026-11-23).** No code has been copied yet. Upstream's
+`57c17539` reverts its console-ABI command-list proxy, import routing, and two console-ABI
+documents; the revert is for broken tests, so the facts from them below still stand.
 
 ### Taken
 
@@ -247,6 +256,15 @@ copy, and port code only where it fits our design.
 | Host `GameInput.dll` can be bound from mapped code (GameInput 0.2309); v0's `GetTemporalReading` returns `E_NOTIMPL` by design; a title's raw mouse registration replaces any of our own | Reported | Later: `runtime/input` (M4) |
 | Threads that exist before the loader starts (pool workers, host libraries' threads) need the guest's static TLS too; Leonida lists the process's threads and writes the template through each TEB | Taken as a problem, solved our own way: the thread notifier became a TLS callback in the host executable, which sees every thread from the start of the process. We measured that an exiting thread clears its TLS array pointer outside the loader lock, so writing through threads we were never told about could hit freed memory. `test_tls_order` checks a thread started before anything else | [execution-model.md](execution-model.md) |
 | Its `CopyFile2` fallback refuses copy flags `CopyFileExW` can't honour instead of dropping them | Taken as a rule, our own code: the fallback refuses copying a directory or a reparse point as such, and only when the source is one; on an ordinary file those flags change nothing. Windows 11's own parameter checks, measured here, now come first on every host | [hle-status.md](hle-status.md) |
+| Gaming Services installs an online-capable `xgameruntime.dll` in System32, and a loader that lets unserved imports reach it gives the title Xbox services | Checked here: present on this machine, with `gameinput.dll`. Taken: the default policy never forwards it, and `test_imports` checks that ([gdk.md](gdk.md)) | [hle-status.md](hle-status.md) |
+| Its XTaskQueue is no longer Microsoft's unmodified: waiter tokens are published before the callback can fire, a waiter callback may unregister itself or a peer or close the queue, and wait lifetimes are fixed. `XTaskQueueTerminate(wait=true)` on a Manual queue, from the thread that dispatches it, deadlocks in Microsoft's code, which its documentation warns of | Reported. Our own queue keeps Microsoft's rule: a Manual port has to be dispatched for termination to end | [gdk.md](gdk.md) |
+| Host error codes where `runtime/io` answers itself: listing below a file gives `ERROR_DIRECTORY` (267), a missing folder `ERROR_PATH_NOT_FOUND`; `MoveFile` onto its own name succeeds and changes nothing; a write-open in a missing folder gives `ERROR_PATH_NOT_FOUND` and creates nothing | Reported, measured on the host | Later: `runtime/io` (mount roots and unmounted drives) |
+| `XNetworking`'s two change registrations (`XNetworkingImpl` slots 6 and 16) send one initial callback on the queue's completion port and none after | Reported; Microsoft documents it | Later: `runtime/gdk` (offline networking) |
+| `OutputDebugStringW` with no debugger raises the wide debug-print exception, then calls the ANSI form on a lossy copy, which raises a second | Reported, measured. A startup trace logs each line once | Later: a startup trace |
+| Its float-mode reading of FSSM +0x104 (0xC0 in all 26,503 headers: round to nearest, f32 denormals flushed) | Checked here: not a float mode. That dword is the top of the first stage record's tag, `0xC00002`, which every record we parse carries. Also reported: +0x10C rounded up to 512 bytes is the compute LDS size in all 2,689 compute programs, and the corpus has 102,365 f32 output modifiers and no f16 ones | [shaders.md](shaders.md) |
+| Measured on RDNA 2 (gfx1036 and gfx1030): an f16 output modifier is ignored while f16 denormals are kept, but clamp still applies; 16_FLOAT typed loads keep a NaN's payload; f32 to f16 in 16_FLOAT stores and d16 loads from 32_FLOAT rounds toward zero; `v_fract_f32` passes NaN through and gives 0xFFC00000 for ±inf; wave64 `ds_bpermute_b32` stays within each 32-lane half; `s_buffer_load` checks bounds per dword; an LDS halfword crossing the end of the allocation reads 0; `image_bvh_intersect_ray` returns the raw watertight values, tests t ≥ 0 but not t max, and breaks edge ties RDNA 2's own way, not RADV's | Reported. Corrects our note that Leonida follows RADV ([shaders.md](shaders.md)) | Later: `shaderrecomp` (M3) |
+| The console command queue has two vtable layouts, the newer shifted by 2 (`Signal` 14 or 16, `PresentX` 30 or 32), and the command list has 160 slots | Not taken yet: reverted upstream, and they come from realdody/americas-recomp, not from this package. Until their source is known they stay out, as xbox-emulator's method map does, since a layout measured on console driver binaries is console SDK material | — |
+| Microsoft's public Xbox GDK graphics reference gives the PC shapes for its d3d12_xs pages; `PresentX`, `D3D12XboxCreateDevice` and the root-signature flags have no page. The upscaler's pipeline slot 11 can answer 0, since none of its 29 programs uses scratch | Reported | Later: `runtime/gpu` (M3) |
 
 ### Not taken
 
@@ -296,7 +314,7 @@ copy, and port code only where it fits our design.
 
 ### Next review
 
-1. Run `git log 3faac557..origin/main` in a scratch clone outside the repo.
+1. Run `git log 561b65a8..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -325,7 +343,7 @@ remaining candidates, both for M3, are the HLSL side of that translator and part
 layer (`crates/compat/d3d12_xs`) for `runtime/gpu`. The method map and other tables it measured
 on console OS binaries stay out (see "Not taken").
 
-**Last reviewed: commit `de1e1da` (2026-11-23).** Upstream rewrote its history on 2026-11-22:
+**Last reviewed: commit `f89e410` (2026-11-23).** Upstream rewrote its history on 2026-11-22:
 `51f5319` is `ceb2b87` on the new `main`, the two trees differing in one redaction line of a
 publishing script.
 
@@ -391,6 +409,9 @@ publishing script.
 | A freed `XMem` range can be handed out again under a resource that still covers it, so a cache of committed pages has to be cleared on every free path | Reported | Later: `runtime/imports/xmem` and `memory_tracker` (M3) |
 | A save container or blob name too long for the host file system is stored under a hashed file name, with the real name in a file beside it | Reported | Later: `runtime/gdk` (`XGameSave`) |
 | `CopyFileExW`, `MoveFileWithProgressW` and `ReplaceFileW`, its backup path included, need the same path redirection as `CreateFileW` | Taken: every move, copy and replace function is HLE on the mounts since `2d4307b` | [hle-status.md](hle-status.md), [io.md](io.md) |
+| A gamepad's user association: plugging the pad sends `XUserDeviceAssociationChanged` from no user to the default user, unplugging the reverse; `XUserFindForDevice` resolves only the connected pad and gives `E_GAMEUSER_USER_NOT_FOUND` for any other ID; `XUserFindControllerForUserWithUiAsync` returns the pad's ID, and with no pad completes with `E_ABORT`, as a dismissed pairing dialog does; GameInput reports the same ID as device and root device | Reported. Agrees with xcl's Minecraft row | Later: `runtime/gdk` and `runtime/input` (M4) |
+| Unregistering an XUser event callback waits for a call still running on another thread, and a callback that unregisters itself doesn't deadlock | Reported. Our task-queue monitors follow the same rule ([gdk.md](gdk.md)) | Later: `runtime/gdk` |
+| Console topology type 0x13 becomes a triangle topology in a non-mesh pipeline state stream, and rect-list draws (IA topology 17) through such a pipeline need the expansion too | Reported | Later: `runtime/gpu` (M3) |
 
 The word-scan and structural checks in these tables come from our own scratch scripts. They
 match AMD's public instruction encodings against the unpacked programs, and their output stays
@@ -438,6 +459,9 @@ local.
   and `cos`; and its hardware-recorded test vectors for VALU and image atomics.
 * **Fortnite and Trackmania fixes** (`6e81ffc..de1e1da`). Title-specific, with nothing GTA VI
   or the console's shared behaviour needs.
+* **Its signed token requests** (`XUserGetTokenAndSignature`, at `4eec5e8`). They sign requests
+  to Xbox services; ours report an offline error (hard rule 5).
+* **Its profiler and Trackmania work at `f89e410`.** Title-specific.
 
 ### TomBox
 
@@ -451,7 +475,7 @@ same check first.
 
 ### Next review
 
-1. Run `git log de1e1da..origin/main` in a scratch clone outside the repo.
+1. Run `git log f89e410..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `README.md`, `docs/BLOCKERS.md`, and `docs/DEVELOPMENT_LOG.md`. Look for
    GTA VI, and for console behaviour that every title shares.
 3. Add each new finding to the table above with its status here, check it when a design
@@ -535,7 +559,7 @@ understanding of the behaviour. We never translate its code. The permissive thir
 material it carries (AMD's ISA and addrlib tables, LLVM's test vectors) we take from upstream
 when we need it.
 
-**Last reviewed: commit `b4edefb` (2026-11-23).** No code has been copied.
+**Last reviewed: commit `ea4bd62` (2026-11-23).** No code has been copied.
 
 ### Taken
 
@@ -601,6 +625,22 @@ design depends on them:
 | `PresentX` has to queue the present copy before it reports the flip, and keep the copy's source until the copy's fence; aliasing barriers must keep placed textures; resetting write-watch when a range is registered drops other users' pending CPU writes | Reported, seen on Unicorn Overlord and XDefiant | Later: `runtime/gpu` and `memory_tracker` (M3) |
 | `GetModuleHandle` on a DLL the title never imported or loaded returns null on Windows, so a stand-in for every DLL the policy covers made an optional DLL look present | Taken, our own code: a policy DLL counts as loaded once a guest module imports or loads it, and an API set while its host DLL is loaded, as measured on the host. `test_loader` checks both | [hle-status.md](hle-status.md) |
 | `CreateFile` with `TRUNCATE_EXISTING` needs `GENERIC_WRITE` and fails with `ERROR_INVALID_PARAMETER` otherwise | Checked here on Windows 11 26200: the check comes before the file is looked for, and neither `GENERIC_ALL`, `FILE_WRITE_DATA` nor `MAXIMUM_ALLOWED` passes it. Taken, our own code, for the read-only mount, which also reports a missing directory or file before refusing a write; the host does the rest | [hle-status.md](hle-status.md) |
+| A truncated ANSI result is cut at a whole character | Reported. Ours (`copy_truncated`) can split a double-byte character; console paths are ASCII, so it is harmless today | Later: `runtime/imports` |
+| Wine's loader looks `PEB.ImageBaseAddress` up in its own module list whenever a thread starts, so pointing it at a manually mapped image crashed the first guest thread under Wine | Checked here: our loader never writes the field, and `GetModuleHandle(NULL)` is HLE, so Proton is safe from it | `runtime/loader` |
+| `TlsGetValue` clears the last error when it succeeds, so a hook that works after calling the original has to restore `GetLastError` | Reported; Microsoft documents it. Our file HLE ends on the host call | `runtime/imports` |
+| From its own stress tests of `XTaskQueue` and `XAsync`: `XTaskQueueDispatch` with an infinite timeout returns false once the queue is terminated, and at once on a terminated queue; a waiter on a port above 1 gets `E_INVALIDARG`; concurrent `XAsyncGetResult` calls run cleanup once; `XAsyncRun` on a terminated queue returns `S_OK`, ends the block with `E_ABORT`, and never runs the completion routine; `XErrorReport` calls its callback outside its lock, so the callback may call it again | Partly agrees: ours returns false from dispatch on a terminated port, refuses a bad port with `E_INVALIDARG` (`test_gdk` checks it), and runs cleanup once. **Conflicts** on `XAsyncRun`: xbox-emulator's row, run against the PC Game Runtime, has `XAsyncBegin` fail with `E_ABORT` on a terminating queue, and ours follows that. Its `XTaskQueueTerminate(wait=true)` also runs a Manual port's items itself, where ours keeps Microsoft's rule | [gdk.md](gdk.md) |
+| `XGameSave`: a container name must be 1 to 256 characters, otherwise `E_GS_INVALID_CONTAINER_NAME`, sync and async (an empty name deleted the provider's whole save folder); the async delete runs when the queue dispatches it, in order with blob updates, and on a terminated queue gives `E_ABORT` and deletes nothing; a blob is written to a unique temporary file beside it and moved over it with write-through, and leftovers are never listed; names match case-insensitively; `XGameSaveInitializeProviderResult` with a null out pointer returns `E_INVALIDARG` and leaves the result | Reported | Later: `runtime/gdk` (`XGameSave`) |
+| `XPackageGetIdentifier` takes three arguments (path or name, buffer size, buffer); `XSystemGetConsoleId` gives the documented PC id, `00000000.00000000.00000000.00000000.00` (38 characters), and titles size the buffer for exactly that; `XUserGetGamertag` cuts classic to 15 characters, unique modern to 16 and modern to 96 bytes, at a character boundary; `XUserFindControllerForUserWithUi` returns the pad's device ID; `XPackageGetUserLocale` matches the OS locale against the declared languages, exactly, then by primary language, then takes the first (its own choice) | Reported. The console ID agrees with xbox-emulator's 39-byte row | Later: `runtime/gdk` |
+| Most of the `s_round_mode` writes in a pack of the same 26,698 programs set f16/f64 rounding toward zero ("95 %"; 122 of 670 sampled programs change the mode) | Checked here: our decoder finds no `s_round_mode` or `s_denorm_mode` in any of the 26,698 programs. The writes are `s_setreg_imm32_b32` to the f16/f64 rounding field, toward zero in 4,776 pixel programs and nearest even in 1,147 pixel and 1,251 other programs, so these are the same writes under another name | [shaders.md](shaders.md) |
+| ISA rules from AMD's reference and one NVIDIA measurement: `v_mad_f16` isn't fused (the product rounds to f16 first); `ds_swizzle` and `ds_bpermute` read 0 from inactive source lanes; an f64 instruction takes a 32-bit literal as the high word, integer and bitmask ones as the low word; f64 negate and absolute value only flip or clear the sign bit (DXC writes `-x` as `-0.0 - x`, and NVIDIA kept a NaN's sign); `v_cvt_pknorm` from f16 works on the f16 bits; small unsigned float formats turn negatives into 0 and keep NaN; `v_cmp_class_f16` mustn't go through f32, which quiets signalling NaNs; `v_interp_mov` and `v_interp_p2` read integer inputs as raw bits; `ds_*_addtid_b32` addresses `M0[15:0]` plus the offset plus 4 times the lane; signed BFE keeps the sign when the field runs past the end | Reported | Later: `shaderrecomp` (M3) |
+| Masks read one lane at a time (`v_cndmask` selectors, carry-ins) need no exchange between the halves of a split wave64 program, which brings the cost from 1.6 to 4.1 times down to 1.04 to 1.16 times (RTX 3090) | Reported. Updates the splitting row above | [shaders.md](shaders.md) |
+| Desktop D3D12: after device removal, fences report `UINT64_MAX`, so check for removal before trusting a readback; Windows 10's built-in D3D12 stops at shader model 6.5, and `ID3D12SDKConfiguration1::CreateDeviceFactory` loads the Agility SDK at run time from an ANSI path with a trailing backslash; Agility 1.620 and later swap a command list's vtable on `Close` and `Reset`, so patched vtables have to be re-adopted; a placed texture whose initial state the PC refuses is retried with `COMMON` | Reported | Later: `runtime/gpu` (M3) |
+| Title memory: console heap type 4 is CBV/SRV/UAV in `CopyDescriptors` too; buffers placed in an `OpenExistingHeapFromAddress` heap are row-major, with console-only flags and state bits stripped; uncommitted 4 KiB pages inside a 64 KiB tile, guard and `PAGE_NOACCESS` pages included, are holes; reservation tracking changes only after `VirtualFree` succeeds, and `VirtualFreeEx` on the current process takes the same path | Reported | Later: `memory_tracker` and `runtime/kernel` (M3) |
+| Frame pacing: `SetFrameIntervalX` accepts values either side of the nominal length (16,666 and 66,666 µs are both valid), and `PresentX` can arrive on another queue than the first present. With one descriptor range, `OMSetRenderTargets` has one handle for N targets | Reported | Later: `runtime/gpu` (M3) |
+| NTFS ignores `FindExSearchLimitToDirectories` and returns files too | Checked here: ours passes the option to the host, so the guest sees the same | [io.md](io.md) |
+| `MicrosoftGame.config` has to be read with its comments stripped, since a commented-out `Executable` or `Identity` was taken as the real one, and may be UTF-16 big-endian | Reported | Later: when we parse it |
+| DirectStorage on the PC: `GetErrorEvent` returns a duplicate the caller closes; `RetrieveErrorRecord` clears the record and resets the event; refused requests are reported in queue order at `Submit`; `Close` waits for requests in flight and fails pending status entries | Reported, its reading of the PC API | Later: `runtime/io` (M2) |
+| GameInput's `UnregisterCallback` waits for a call still running, and mustn't deadlock from inside the callback; `QueryInterface` answers only the v0 interface IDs; `XInputGetState` on an empty slot asks the driver every time, so empty slots are polled at most once a second; keyboard input by physical scancode works on AZERTY layouts, and is reset when the window loses focus | Reported | Later: `runtime/input` (M4, keyboard and mouse) |
 
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".
@@ -631,10 +671,12 @@ setting is simpler.
   XNetworking. Hard rule 5.
 * **Its tooling changes** (launcher configuration, RPF probe options, shader tool output,
   disassembler byte ranges, the manifest storage quota). They carry no new facts.
+* **Its changes at `ea4bd62` with nothing for us:** networking (rule 5), its write overlay
+  (we have none), host-wide hooking, audio internals, and its tests and tooling.
 
 ### Next review
 
-1. Run `git log b4edefb..origin/main` in a scratch clone outside the repo.
+1. Run `git log ea4bd62..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `HANDOFF.md` and `docs/specs/` for facts, written up in our own words.
 3. Add each new finding to the tables above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -663,5 +705,9 @@ Public material; listed here so it can be found again.
   decodes `gfx1013`.
 * [rpf9-explorer](https://github.com/breadbbbb/rpf9-explorer): an RPF9 reader and asset
   exporter that Leonida builds on. No licence file in Leonida's copy. Unvetted.
+* [americas-recomp](https://github.com/realdody/americas-recomp) (GPL-2.0-only, with 88 files
+  relicensed MIT in its `REUSE.toml`): another project on Xbox Series titles, which Leonida
+  cites for console command queue and list vtable layouts. Not tracked yet; its GPL-2.0-only
+  parts would be facts only, as with xcl.
 * [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) (University of
   Illinois/NCSA): compiles HLSL to DXIL. xbox-emulator's shader backend uses it.

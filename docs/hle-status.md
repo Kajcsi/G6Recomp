@@ -51,6 +51,17 @@ be checked as each service is built:
 * `XUserRegisterForDeviceAssociationChanged` (xcl, on Minecraft): the title treats a gamepad as
   connected only after the callback reports it moving from no user to the local user, and the
   callback runs on the title's task queue. Our single offline user gets the same transition.
+  xbox-emulator adds the reverse on unplug, `E_GAMEUSER_USER_NOT_FOUND` from
+  `XUserFindForDevice` for any ID but the pad's, and `E_ABORT` from
+  `XUserFindControllerForUserWithUiAsync` with no pad, as a dismissed pairing dialog gives.
+* `XGameSave` container names are 1 to 256 characters, otherwise
+  `E_GS_INVALID_CONTAINER_NAME`, in the sync and async forms (xcl: an empty name deleted the
+  whole save folder).
+* `XPackageGetIdentifier` takes three arguments: path or name, buffer size, buffer (xcl).
+* `XSystemGetConsoleId` gives the documented PC id, `00000000.00000000.00000000.00000000.00`,
+  38 characters; titles size the buffer for exactly that (xcl, and xbox-emulator's 39 bytes).
+* `XNetworking`'s two change registrations send one initial callback on the completion port
+  and none after (Leonida, from Microsoft's documentation).
 * A title's window: Fortnite creates it with `CreateWindowExW` from
   `ext-ms-win-rtcore-ntuser-window-l1-1-0` (xcl), so the window HLE covers both the A and W
   forms.

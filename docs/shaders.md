@@ -609,7 +609,8 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
   checks assume denormals are kept.
 * **Float mode changes.** **Checked here (word scan):** the only field of the MODE register the
   programs set with `s_setreg_imm32_b32` is the f16/f64 rounding field (bits 3:2 of FP_ROUND).
-  Leonida reports the same. The scan finds no `s_round_mode` or `s_denorm_mode`.
+  Leonida reports the same. The scan finds no `s_round_mode` or `s_denorm_mode`, and the decoder
+  finds neither in any of the 26,698 programs.
   * 4,776 pixel shaders set that field to round toward zero, and 1,147 set it to nearest even.
     Other stages set it only to nearest even: 571 compute, 595 mesh, and 85 vertex programs.
   * So f16 results in those pixel shaders round toward zero from that point on. Xbox2Windows
@@ -650,7 +651,10 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
   views.
 * **Ray tracing.** 64 compute shaders (ray-traced shadows) use the hardware BVH intersection
   instruction, which expects AMD's node format.
-  * Leonida emulates each intersection step the way Mesa's RADV driver does in software.
+  * Leonida first emulated each intersection step the way Mesa's RADV driver does in software.
+    It has since measured the instruction on an RX 6800: it returns the raw watertight values,
+    and breaks edge ties RDNA 2's own way, not RADV's ([related-work.md](related-work.md),
+    Leonida).
   * Either way, the acceleration structures have to be built in AMD's node format.
   * Leonida: these compute shaders compile slowly, so their translation belongs on a background
     thread.

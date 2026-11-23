@@ -390,6 +390,9 @@ TEST_CASE("handles and arguments are checked") {
     CHECK(XTaskQueueRegisterMonitor(queue, nullptr, nullptr, &token) == E_POINTER);
     CHECK(XTaskQueueRegisterWaiter(queue, Port::Work, nullptr, &item, record, &token) ==
           E_INVALIDARG);
+    const Event signal;
+    CHECK(XTaskQueueRegisterWaiter(queue, kBadPort, signal.handle, &item, record, &token) ==
+          E_INVALIDARG);
     CHECK(XTaskQueueCreateComposite(nullptr, nullptr, &out) == kInvalidHandle);
     XTaskQueueCloseHandle(queue);
 }
