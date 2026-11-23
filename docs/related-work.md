@@ -599,6 +599,8 @@ design depends on them:
 | Translated shaders reach title memory through window buffers rather than the resources a barrier names, so each batch with a UAV barrier or a transition to `UNORDERED_ACCESS` gets one UAV barrier for all resources | Reported | Later: `runtime/gpu` (M3) |
 | `PresentX` has to queue the present copy before it reports the flip, and keep the copy's source until the copy's fence; aliasing barriers must keep placed textures; resetting write-watch when a range is registered drops other users' pending CPU writes | Reported, seen on Unicorn Overlord and XDefiant | Later: `runtime/gpu` and `memory_tracker` (M3) |
 
+| `GetModuleHandle` on a DLL the title never imported or loaded returns null on Windows, so a stand-in for every DLL the policy covers made an optional DLL look present | Taken, our own code: a policy DLL counts as loaded once a guest module imports or loads it, and an API set while its host DLL is loaded, as measured on the host. `test_loader` checks both | [hle-status.md](hle-status.md) |
+
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".
 

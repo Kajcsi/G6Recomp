@@ -513,6 +513,35 @@ TEST_CASE("the HLE loader functions see guest modules and the policy") {
     CHECK_EQ(std::filesystem::path(std::wstring(buffer, length)), guest.path());
 }
 
+TEST_CASE("the guest's GetModuleHandle finds a policy DLL only once it is loaded") {
+    // As on Windows, where a title can probe for an optional DLL this way.
+    LoaderOptions options = make_options();
+    options.imports.hle("g6fakeunused.dll", Symbol::by_name("g6fake_add"),
+                        reinterpret_cast<const void*>(&host_fake_add));
+    Loader loader(std::move(options));
+    const Module guest = loader.load("loader_guest.dll");
+    using GetModuleHandleFn = void* (*)(const wchar_t*, unsigned long*);
+    const auto get_module_handle =
+        guest_function<GetModuleHandleFn>(guest, "g6_guest_get_module_handle");
+    const auto load_library = guest_function<GetModuleHandleFn>(guest, "g6_guest_load_library");
+    unsigned long error = 0;
+
+    // The guest imports it, so it is loaded.
+    CHECK(get_module_handle(L"g6fakeos.dll", &error) != nullptr);
+
+    // The policy provides it, but nothing has loaded it yet.
+    CHECK(get_module_handle(L"g6fakeunused.dll", &error) == nullptr);
+    CHECK_EQ(error, static_cast<unsigned long>(ERROR_MOD_NOT_FOUND));
+    void* const loaded = load_library(L"g6fakeunused.dll", &error);
+    REQUIRE(loaded != nullptr);
+    CHECK(get_module_handle(L"G6FAKEUNUSED", &error) == loaded);
+
+    // An API set counts as loaded while its host DLL is, as Windows answers API set names.
+    CHECK(get_module_handle(L"api-ms-win-core-synch-l1-2-0.dll", &error) != nullptr);
+    CHECK(get_module_handle(L"api-ms-win-core-nosuch-l1-1-0.dll", &error) == nullptr);
+    CHECK_EQ(error, static_cast<unsigned long>(ERROR_MOD_NOT_FOUND));
+}
+
 TEST_CASE("the guest's GetModuleFileName reports the path the options give") {
     // As the runner gives console paths for the guest's files (docs/io.md).
     LoaderOptions options = make_options();

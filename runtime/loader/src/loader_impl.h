@@ -102,7 +102,12 @@ struct Loader::Impl {
     bool host_side_available(std::string_view key);
     // A stand-in module handle for a DLL that isn't a guest module, so that GetProcAddress on
     // it goes through the registry under the name the guest asked for. Never a real module.
+    // Handing one out counts the DLL as loaded.
     const void* pseudo_handle(std::string_view key);
+    // The pseudo handle GetModuleHandle gives: only for a DLL that counts as loaded, which is
+    // one a guest module imports or has loaded, or an API set whose host DLL is loaded. Windows
+    // answers API set names by their host DLL the same way. Null otherwise.
+    const void* loaded_pseudo_handle(std::string_view key);
     std::optional<std::string> pseudo_name(const void* handle) const;
 
     // `locked`: the caller holds `mutex`, so modules of the load in progress count too.

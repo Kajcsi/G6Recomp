@@ -6,6 +6,7 @@
 // * Any other DLL the registry provides gets a pseudo handle, a reserved address that stands for
 //   the DLL name. GetProcAddress on it resolves through the registry under that name, so an API
 //   set the policy forwards stays forwarded and one it doesn't stays out of reach.
+//   GetModuleHandle gives one only once the DLL counts as loaded, as Windows does.
 // * Networking DLLs are never present (hard rule 5).
 //
 // Each function keeps the caller's last error on success and sets the Win32 error on failure.
@@ -119,8 +120,9 @@ HMODULE WINAPI GetModuleHandleW(LPCWSTR name) {
         if (const Module::State* module = impl->find_published(key)) {
             return as_handle(module->base());
         }
+        // Like Windows, only a DLL that is loaded: one a guest module imports or has loaded.
         if (impl->host_side_available(key)) {
-            if (const void* handle = impl->pseudo_handle(key)) {
+            if (const void* handle = impl->loaded_pseudo_handle(key)) {
                 return static_cast<HMODULE>(const_cast<void*>(handle));
             }
         }

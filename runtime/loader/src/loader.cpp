@@ -361,6 +361,20 @@ const void* Loader::Impl::pseudo_handle(std::string_view key) {
     return pseudo_region + index * kPseudoStep;
 }
 
+const void* Loader::Impl::loaded_pseudo_handle(std::string_view key) {
+    {
+        const std::scoped_lock lock(pseudo_mutex);
+        if (const auto it = std::ranges::find(pseudo_names, key); it != pseudo_names.end()) {
+            return pseudo_region + static_cast<size_t>(it - pseudo_names.begin()) * kPseudoStep;
+        }
+    }
+    const bool api_set = key.starts_with("api-ms-") || key.starts_with("ext-ms-");
+    if (api_set && ::GetModuleHandleW(widen(key).c_str()) != nullptr) {
+        return pseudo_handle(key);
+    }
+    return nullptr;
+}
+
 std::optional<std::string> Loader::Impl::pseudo_name(const void* handle) const {
     const auto address = reinterpret_cast<uintptr_t>(handle);
     const auto start = reinterpret_cast<uintptr_t>(pseudo_region);
@@ -517,6 +531,11 @@ void Loader::Impl::bind_imports(Module::State& module, BindStats& stats) {
                     fmt::format("{} has an import slot outside the image", module.name));
             }
             write_at(base + entry.iat_rva, reinterpret_cast<uint64_t>(address));
+        }
+        // A DLL the policy provides counts as loaded once a guest module imports it, so the
+        // guest's GetModuleHandle finds it from then on.
+        if (find_any(key) == nullptr && host_side_available(key)) {
+            pseudo_handle(key);
         }
         // Delay-load imports are bound already, so the delay-load helper never runs. The module
         // handle slot still gets a handle, for code that reads it.
