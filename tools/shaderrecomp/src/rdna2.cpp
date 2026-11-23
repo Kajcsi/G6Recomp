@@ -245,7 +245,8 @@ void decode_operands(Instruction& insn) {
         const uint32_t sdata = field(w, 6, 7);
         const uint32_t sbase = field(w, 0, 6) * 2; // an even SGPR pair, stored halved
         const uint32_t soffset = field(d1, 25, 7);
-        insn.imm = field(d1, 0, 21);
+        // A signed 21-bit byte offset (LLVM decodes it so, and RDNA 2 hardware reads it so).
+        insn.imm = static_cast<int64_t>(field(d1, 0, 21) ^ 0x100000U) - 0x100000;
         switch (insn.opcode) {
         case 0x1F: // s_gl1_inv
         case 0x20: // s_dcache_inv
@@ -505,8 +506,13 @@ std::vector<uint32_t> to_words(std::span<const uint8_t> code) {
     return words;
 }
 
+// Every combination exists for sample (0x20-0x3F). Gather4 (0x40-0x5F) has no derivative forms:
+// the _d and _d_cl slots (modifier 2 and 3) are not gather4 opcodes.
 bool sample_or_gather(const Instruction& insn) {
-    return insn.encoding == Encoding::kMimg && insn.opcode >= 0x20 && insn.opcode < 0x60;
+    if (insn.encoding != Encoding::kMimg || insn.opcode < 0x20 || insn.opcode >= 0x60) {
+        return false;
+    }
+    return insn.opcode < 0x40 || (insn.opcode & 6) != 2;
 }
 
 } // namespace

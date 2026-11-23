@@ -105,6 +105,10 @@ TEST_CASE("SMEM loads name their base pair and an SGPR offset unless it is null"
     const r::Instruction offset = one({0xF4080100, 0x0A000010});
     REQUIRE(offset.src_count == 2);
     CHECK(offset.src[1] == sgpr(5));
+
+    // The offset is signed: 0x1FFFF0 is -16, and 0x0FFFFF the largest positive offset.
+    CHECK_EQ(one({0xF4080100, 0xFA1FFFF0}).imm, int64_t{-16});
+    CHECK_EQ(one({0xF4080100, 0xFA0FFFFF}).imm, int64_t{0xFFFFF});
 }
 
 TEST_CASE("VOP1, VOP2 and VOPC decode their extra dwords") {
@@ -235,6 +239,12 @@ TEST_CASE("memory, interpolation and export instructions decode") {
     CHECK(sample.src[6] == sgpr(16));
     // image_sample_c_lz_o, by the naming pattern.
     CHECK_EQ(r::mnemonic(one({0xF0FC0F00, 0x00820004})), std::string("image_sample_c_lz_o"));
+    // Gather4 has no derivative forms, so 0x42 and 0x5B have no name; 0x40 and 0x47 do.
+    CHECK_EQ(r::mnemonic(one({0xF1000F00, 0x00820004})), std::string("image_gather4"));
+    CHECK_EQ(r::mnemonic(one({0xF11C0F00, 0x00820004})), std::string("image_gather4_lz"));
+    CHECK(!r::named(one({0xF1080F00, 0x00820004})));
+    CHECK(!r::named(one({0xF16C0F00, 0x00820004})));
+    CHECK(r::named(one({0xF0880F00, 0x00820004}))); // image_sample_d
 
     // global_load_dword v1, v[2:3], off
     const r::Instruction global = one({0xDC308000, 0x017D0002});
@@ -309,6 +319,13 @@ TEST_CASE("the opcode tables name promoted and split compare opcodes") {
     CHECK(r::opcode_name(r::Encoding::kVopc, 0x99) == std::string_view("v_cmpx_lt_i16"));
     CHECK(!r::opcode_name(r::Encoding::kVopc, 0xAF).has_value());
     CHECK(r::opcode_name(r::Encoding::kVop3, 0x16D) == std::string_view("v_div_scale_f32"));
+    // VOP2-only and VOP1-only opcodes have no VOP3 form.
+    for (const uint16_t opcode : {0x120, 0x121, 0x12C, 0x12D, 0x137, 0x138, 0x13C, 0x1E5}) {
+        CHECK(!r::opcode_name(r::Encoding::kVop3, opcode).has_value());
+    }
+    CHECK(r::opcode_name(r::Encoding::kVop2, 0x3C) == std::string_view("v_pk_fmac_f16"));
+    CHECK(r::opcode_name(r::Encoding::kVop1, 0x65) == std::string_view("v_swap_b32"));
+    CHECK(r::opcode_name(r::Encoding::kVop3, 0x12B) == std::string_view("v_fmac_f32"));
     CHECK(r::opcode_name(r::Encoding::kDs, 0xA1) == std::string_view("ds_write_b16_d16_hi"));
     CHECK(r::opcode_name(r::Encoding::kDs, 0xA7) == std::string_view("ds_read_u16_d16_hi"));
     CHECK(r::opcode_name(r::Encoding::kExport, 0) == std::string_view("exp"));

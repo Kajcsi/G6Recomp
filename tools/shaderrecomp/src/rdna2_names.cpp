@@ -784,9 +784,23 @@ std::optional<std::string_view> opcode_name(Encoding encoding, uint16_t opcode) 
             return vopc_table().find(opcode);
         }
         if (opcode < 0x140) {
-            return vop2_table().find(opcode - 0x100);
+            // The forms with an inline constant K (madmk, madak, fmamk, fmaak) and v_pk_fmac_f16
+            // exist only as VOP2.
+            switch (opcode - 0x100) {
+            case 0x20:
+            case 0x21:
+            case 0x2C:
+            case 0x2D:
+            case 0x37:
+            case 0x38:
+            case 0x3C: return std::nullopt;
+            default: return vop2_table().find(opcode - 0x100);
+            }
         }
         if (opcode >= 0x180 && opcode < 0x200) {
+            if (opcode == 0x180 + 0x65) { // v_swap_b32 exists only as VOP1
+                return std::nullopt;
+            }
             return vop1_table().find(opcode - 0x180);
         }
         return vop3_table().find(opcode);

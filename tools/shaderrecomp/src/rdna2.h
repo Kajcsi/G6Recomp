@@ -89,7 +89,7 @@ inline constexpr size_t kMaxSources = 16;
 // One decoded instruction. Destinations and sources are in encoding order. The fields after them
 // mean different things per encoding:
 //   SOPK, SOPP       imm: SIMM16, sign-extended
-//   SMEM             imm: the 21-bit OFFSET as stored; imm2: SDATA for s_atc_probe*; sources:
+//   SMEM             imm: the 21-bit OFFSET, sign-extended; imm2: SDATA for s_atc_probe*; sources:
 //                    the base SGPR pair, then SOFFSET unless it is null
 //   VOP3, VOP3P      mask: abs (bits 0-2; VOP3P: neg_hi) | neg << 3; imm: clamp; imm2: omod
 //                    (VOP3P: op_sel_hi, bits 0-1 from dword 1 and bit 2 from dword 0);
