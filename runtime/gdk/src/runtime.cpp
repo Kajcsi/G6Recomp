@@ -1,11 +1,13 @@
 #include "g6/gdk/runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <intrin.h>
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 
 #include <fmt/format.h>
 
@@ -13,6 +15,7 @@
 #include "g6/gdk/error.h"
 #include "g6/gdk/task_queue.h"
 #include "g6/gdk/thread.h"
+#include "g6/gdk/user.h"
 #include "g6/log.h"
 
 // The service objects are COM-style: a pointer to a vtable whose first three slots are
@@ -50,21 +53,31 @@ std::string guid_text(const GUID& id) {
                        id.Data4[3], id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
 }
 
+// Whether `key` is reported for the first time.
+struct Reported {
+    std::mutex mutex;
+    std::set<std::string> keys;
+};
+
+bool first_report(std::string key) {
+    static Reported reported;
+    const std::scoped_lock lock(reported.mutex);
+    return reported.keys.insert(std::move(key)).second;
+}
+
 // ---- IUnknown ----
 
 const GUID& interface_of(const Object* self);
+const Object* find_interface(const Object* self, const GUID& interface_id);
 
 HRESULT query_interface(const Object* self, const GUID* interface_id, void** object) {
     if (object == nullptr) {
         return E_POINTER;
     }
-    if (interface_id != nullptr &&
-        (*interface_id == kUnknownId || *interface_id == interface_of(self))) {
-        *object = const_cast<Object*>(self);
-        return S_OK;
-    }
-    *object = nullptr;
-    return E_NOINTERFACE;
+    const Object* const found =
+        interface_id != nullptr ? find_interface(self, *interface_id) : nullptr;
+    *object = const_cast<Object*>(found);
+    return found != nullptr ? S_OK : E_NOINTERFACE;
 }
 
 ULONG add_ref(const Object* /*self*/) {
@@ -77,18 +90,23 @@ ULONG release(const Object* /*self*/) {
 
 // ---- Slots nothing has explained yet ----
 
-// A slot whose function is unknown: logged once with the caller, then E_NOTIMPL. The arguments,
-// if any, are left alone.
+// A slot whose function is unknown or not provided: logged once per interface with the caller,
+// then E_NOTIMPL. The arguments, if any, are left alone.
 template <int Slot>
 HRESULT unknown_slot(const Object* self) {
-    static std::atomic<bool> reported{false};
-    if (!reported.exchange(true)) {
+    const std::string name = guid_text(interface_of(self));
+    if (first_report(fmt::format("{} slot {}", name, Slot))) {
         LOG_WARN(gdk,
                  "xgameruntime.dll: interface {} slot {} is unknown, called from {}; "
                  "returning E_NOTIMPL",
-                 guid_text(interface_of(self)), Slot, _ReturnAddress());
+                 name, Slot, _ReturnAddress());
     }
     return E_NOTIMPL;
+}
+
+template <int Slot>
+const void* unknown() noexcept {
+    return reinterpret_cast<const void*>(&unknown_slot<Slot>);
 }
 
 // Error interface slot 3, which the thunks call with two arguments and no result.
@@ -115,7 +133,7 @@ const std::array<const void*, 31> kThreadingSlots = {
     method<&XAsyncCancel>(),
     method<&XAsyncRun>(),
     method<&XAsyncBegin>(),
-    reinterpret_cast<const void*>(&unknown_slot<8>),
+    unknown<8>(),
     method<&XAsyncSchedule>(),
     method<&XAsyncComplete>(),
     method<&XAsyncGetResult>(),
@@ -135,7 +153,7 @@ const std::array<const void*, 31> kThreadingSlots = {
     method<&XTaskQueueGetCurrentProcessTaskQueue>(),
     method<&XTaskQueueSetCurrentProcessTaskQueue>(),
     method<&XThreadSetTimeSensitive>(),
-    reinterpret_cast<const void*>(&unknown_slot<28>),
+    unknown<28>(),
     method<&XThreadAssertNotTimeSensitive>(),
     method<&XThreadIsTimeSensitive>(),
 };
@@ -158,40 +176,144 @@ const std::array<const void*, 4> kFeatureSlots = {
     method<&XGameRuntimeIsFeatureAvailable>(),
 };
 
+// XUserImpl, the user functions. Slot 15 has no thunk. Slots 37 to 41 and 43 to 46 aren't
+// provided: their thunks pass 2, 2, 4, 4, 2 and 2, 1, 3, 2 arguments (docs/gdk.md, "XUser").
+const std::array<const void*, 47> kUserSlots = {
+    reinterpret_cast<const void*>(&query_interface),
+    reinterpret_cast<const void*>(&add_ref),
+    reinterpret_cast<const void*>(&release),
+    method<&XUserDuplicateHandle>(),
+    method<&XUserCloseHandle>(),
+    method<&XUserCompare>(),
+    method<&XUserGetMaxUsers>(),
+    method<&XUserAddAsync>(),
+    method<&XUserAddResult>(),
+    method<&XUserGetLocalId>(),
+    method<&XUserFindUserByLocalId>(),
+    method<&XUserGetId>(),
+    method<&XUserFindUserById>(),
+    method<&XUserGetIsGuest>(),
+    method<&XUserGetState>(),
+    unknown<15>(),
+    method<&XUserGetGamerPictureAsync>(),
+    method<&XUserGetGamerPictureResultSize>(),
+    method<&XUserGetGamerPictureResult>(),
+    method<&XUserGetAgeGroup>(),
+    method<&XUserCheckPrivilege>(),
+    method<&XUserResolvePrivilegeWithUiAsync>(),
+    method<&XUserResolvePrivilegeWithUiResult>(),
+    method<&XUserGetTokenAndSignatureAsync>(),
+    method<&XUserGetTokenAndSignatureResultSize>(),
+    method<&XUserGetTokenAndSignatureResult>(),
+    method<&XUserGetTokenAndSignatureUtf16Async>(),
+    method<&XUserGetTokenAndSignatureUtf16ResultSize>(),
+    method<&XUserGetTokenAndSignatureUtf16Result>(),
+    method<&XUserResolveIssueWithUiAsync>(),
+    method<&XUserResolveIssueWithUiResult>(),
+    method<&XUserResolveIssueWithUiUtf16Async>(),
+    method<&XUserResolveIssueWithUiUtf16Result>(),
+    method<&XUserRegisterForChangeEvent>(),
+    method<&XUserUnregisterForChangeEvent>(),
+    method<&XUserGetSignOutDeferral>(),
+    method<&XUserCloseSignOutDeferralHandle>(),
+    unknown<37>(),
+    unknown<38>(),
+    unknown<39>(),
+    unknown<40>(),
+    unknown<41>(),
+    method<&XUserIsStoreUser>(),
+    unknown<43>(),
+    unknown<44>(),
+    unknown<45>(),
+    unknown<46>(),
+};
+
+// XUser's gamertag interface.
+const std::array<const void*, 4> kUserGamertagSlots = {
+    reinterpret_cast<const void*>(&query_interface),
+    reinterpret_cast<const void*>(&add_ref),
+    reinterpret_cast<const void*>(&release),
+    method<&XUserGetGamertag>(),
+};
+
+// XUser's device functions.
+const std::array<const void*, 11> kUserDeviceSlots = {
+    reinterpret_cast<const void*>(&query_interface),
+    reinterpret_cast<const void*>(&add_ref),
+    reinterpret_cast<const void*>(&release),
+    method<&XUserFindForDevice>(),
+    method<&XUserRegisterForDeviceAssociationChanged>(),
+    method<&XUserUnregisterForDeviceAssociationChanged>(),
+    method<&XUserGetDefaultAudioEndpointUtf16>(),
+    method<&XUserRegisterForDefaultAudioEndpointUtf16Changed>(),
+    method<&XUserUnregisterForDefaultAudioEndpointUtf16Changed>(),
+    method<&XUserFindControllerForUserWithUiAsync>(),
+    method<&XUserFindControllerForUserWithUiResult>(),
+};
+
 const Object kThreading{kThreadingSlots.data()};
 const Object kError{kErrorSlots.data()};
 const Object kFeature{kFeatureSlots.data()};
+const Object kUser{kUserSlots.data()};
+const Object kUserGamertag{kUserGamertagSlots.data()};
+const Object kUserDevice{kUserDeviceSlots.data()};
 
-struct Service {
+// Each interface a service has, and the object that answers for it. The first row of a class
+// also answers for IUnknown.
+struct Interface {
+    const GUID& runtime_class;
     const GUID& id;
     const Object& object;
 };
 
-const std::array<Service, 3> kServices = {{
-    {kThreadingId, kThreading},
-    {kErrorId, kError},
-    {kFeatureId, kFeature},
+const std::array<Interface, 6> kInterfaces = {{
+    {kThreadingId, kThreadingId, kThreading},
+    {kErrorId, kErrorId, kError},
+    {kFeatureId, kFeatureId, kFeature},
+    {kUserClassId, kUserInterfaceId, kUser},
+    {kUserClassId, kUserGamertagInterfaceId, kUserGamertag},
+    {kUserDeviceClassId, kUserDeviceInterfaceId, kUserDevice},
 }};
 
-const GUID& interface_of(const Object* self) {
-    for (const Service& service : kServices) {
-        if (&service.object == self) {
-            return service.id;
+const Interface* row_of(const Object* self) {
+    for (const Interface& row : kInterfaces) {
+        if (&row.object == self) {
+            return &row;
         }
     }
-    return kUnknownId;
+    return nullptr;
 }
 
-// Classes QueryApiImpl has reported as missing.
-struct Reported {
-    std::mutex mutex;
-    std::set<std::string> classes;
-};
+const GUID& interface_of(const Object* self) {
+    const Interface* const row = row_of(self);
+    return row != nullptr ? row->id : kUnknownId;
+}
 
-bool first_report(const GUID& runtime_class) {
-    static Reported reported;
-    const std::scoped_lock lock(reported.mutex);
-    return reported.classes.insert(guid_text(runtime_class)).second;
+bool has_class(const GUID& runtime_class) {
+    return std::ranges::any_of(
+        kInterfaces, [&](const Interface& row) { return row.runtime_class == runtime_class; });
+}
+
+// The object for `interface_id` in a class, or null.
+const Object* find_in_class(const GUID& runtime_class, const GUID& interface_id) {
+    const Object* first = nullptr;
+    for (const Interface& row : kInterfaces) {
+        if (row.runtime_class != runtime_class) {
+            continue;
+        }
+        if (row.id == interface_id) {
+            return &row.object;
+        }
+        if (first == nullptr) {
+            first = &row.object;
+        }
+    }
+    return interface_id == kUnknownId ? first : nullptr;
+}
+
+const Object* find_interface(const Object* self, const GUID& interface_id) {
+    const Interface* const row = row_of(self);
+    return row != nullptr ? find_in_class(row->runtime_class, interface_id) : nullptr;
 }
 
 std::atomic<uint64_t> g_reported_features{0};
@@ -216,16 +338,23 @@ HRESULT QueryApiImpl(const GUID* runtime_class, const GUID* interface_id, void**
     if (runtime_class == nullptr || interface_id == nullptr) {
         return E_POINTER;
     }
-    for (const Service& service : kServices) {
-        if (*runtime_class == service.id) {
-            return query_interface(&service.object, interface_id, object);
+    if (!has_class(*runtime_class)) {
+        if (first_report(guid_text(*runtime_class))) {
+            LOG_WARN(gdk, "QueryApiImpl: no service {} yet (interface {}), called from {}",
+                     guid_text(*runtime_class), guid_text(*interface_id), _ReturnAddress());
         }
+        return REGDB_E_CLASSNOTREG;
     }
-    if (first_report(*runtime_class)) {
-        LOG_WARN(gdk, "QueryApiImpl: no service {} yet (interface {}), called from {}",
-                 guid_text(*runtime_class), guid_text(*interface_id), _ReturnAddress());
+    const Object* const found = find_in_class(*runtime_class, *interface_id);
+    if (found == nullptr) {
+        if (first_report(guid_text(*runtime_class) + "/" + guid_text(*interface_id))) {
+            LOG_WARN(gdk, "QueryApiImpl: service {} has no interface {}, called from {}",
+                     guid_text(*runtime_class), guid_text(*interface_id), _ReturnAddress());
+        }
+        return E_NOINTERFACE;
     }
-    return REGDB_E_CLASSNOTREG;
+    *object = const_cast<Object*>(found);
+    return S_OK;
 }
 
 HRESULT InitializeApiImpl(uint32_t version_high, uint32_t version_low) {

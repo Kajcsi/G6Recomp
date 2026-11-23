@@ -4,7 +4,7 @@ The Xbox Game Runtime APIs: `runtime/gdk` implements them against the public GDK
 a guest built against the GDK gets the types, layouts, and error codes it expects. Status per
 function is in [hle-status.md](hle-status.md), "runtime/gdk".
 
-**Status: XTaskQueue, XAsync, XError, and XThread implemented and bound (2026-11-23).** The
+**Status: XTaskQueue, XAsync, XError, XThread, and XUser implemented and bound (2026-11-23).** The
 guest reaches them the way a title does on the console: through our `xgameruntime.dll`, its
 `QueryApiImpl`, and the interface vtables ("The Game Runtime DLL" below). The default policy never
 forwards `xgameruntime.dll` to the host's copy, which talks to Xbox services (hard rule 5);
@@ -62,8 +62,10 @@ XCurl. A GDK title links the same library into its executable.
    negative result fails the lookup. Other errors go to `XErrorReport`, with 0x89240100 or
    0x8924010A.
 
-**Lookups.** Each thunk passes one GUID as both the class ID and the interface ID to a wrapper,
-which starts the runtime if needed and then calls `QueryApiImpl(class, interface, &object)`.
+**Lookups.** Each thunk passes a class ID and an interface ID to a wrapper, which starts the
+runtime if needed and then calls `QueryApiImpl(class, interface, &object)`. The threading,
+error, and feature thunks pass the same GUID twice; the XUser thunks pass their class with one of
+two interfaces.
 The thunk then calls one vtable slot of the object and releases it (slot 2). A wrapper that
 gets `REGDB_E_CLASSNOTREG` (0x80040154) turns it into 0x89240107 and reports it through
 `XErrorReport`.
@@ -72,9 +74,11 @@ gets `REGDB_E_CLASSNOTREG` (0x80040154) turns it into 0x89240107 and reports it 
 `default_game_policy()` binds them as HLE for `xgameruntime.dll`:
 
 * `QueryApiImpl` returns static objects, so the reference counts never reach zero. It gives
-  `E_POINTER` for a null argument and `E_NOINTERFACE` for an interface a service doesn't have.
-  For a service we don't provide yet it gives `REGDB_E_CLASSNOTREG`, which the guest reports,
-  and it logs each missing class once.
+  `E_POINTER` for a null argument. For a service we don't provide yet it gives
+  `REGDB_E_CLASSNOTREG`, which the guest reports, and for an interface a service doesn't have,
+  `E_NOINTERFACE`; it logs each missing class, and each missing interface of a class, once.
+  `IUnknown` gives a class's first interface. An object's own slot 0 answers for the other
+  interfaces of its class.
 * The initializers log their arguments once and succeed. `UninitializeApiImpl` succeeds.
 * Every other export is `E_NOTIMPL` for an import, and `GetProcAddress` finds nothing for it.
   `RestartApiImpl`, `RundownApiImpl`, and `GetApiVersionImpl` are such names: XCurl looks them
@@ -106,6 +110,8 @@ passes, and whether it uses the result and how wide it is.
 | Slot | Feature (8836fe87-edb9-4fe3-8dad-05f0d2cd5b40) |
 |---|---|
 | 3 | `XGameRuntimeIsFeatureAvailable`: one argument, returns `bool` |
+
+The XUser slots are in "XUser" below.
 
 The threading order matches xgameruntime-rs (MIT,
 [related-work.md](related-work.md)), with one exception. xgameruntime-rs puts a private
@@ -267,6 +273,89 @@ thread. `XThreadAssertNotTimeSensitive` is what the runtime's blocking functions
 marked thread it logs a warning, once per thread, and the call goes on. The guest reaches it
 through one thunk, so a caller address would only name the thunk.
 
+## XUser
+
+XUser gives the game one local user, offline, and always signed in. Every request to add a user
+returns it, without UI, whatever the options. Hard rule 5 decides the rest: nothing that needs
+the Xbox network succeeds.
+
+**Interfaces.** The console's libHttpClient reaches XUser through two classes, and we checked
+every thunk for its slot, the number of arguments it passes, and whether it keeps the result:
+
+* class 01acd177-91f9-4763-a38e-ccbb55ce32e0 with interface 26f3c674-a2fe-44fa-b6c4-a323bc94ff53
+  (43 thunks), or with interface cef4fac0-7676-4a94-a119-4c43f9eb5b74 (1 thunk, the gamertag);
+* class 7d824997-10dc-45ab-86b7-2737767c0bf1 with interface 0cc6a956-e7e1-4fdf-9341-9d5da649ebc8
+  (8 thunks, devices).
+
+| Slot | User (26f3c674) |
+|---|---|
+| 3 to 6 | `XUserDuplicateHandle`, `XUserCloseHandle` (no result), `XUserCompare` (32-bit), `XUserGetMaxUsers` |
+| 7, 8 | `XUserAddAsync`, `XUserAddResult` |
+| 9 to 14 | `XUserGetLocalId`, `XUserFindUserByLocalId`, `XUserGetId`, `XUserFindUserById`, `XUserGetIsGuest`, `XUserGetState` |
+| 15 | No thunk. Fails with `E_NOTIMPL` |
+| 16 to 18 | `XUserGetGamerPictureAsync`, `XUserGetGamerPictureResultSize`, `XUserGetGamerPictureResult` |
+| 19 to 22 | `XUserGetAgeGroup`, `XUserCheckPrivilege`, `XUserResolvePrivilegeWithUiAsync`, `XUserResolvePrivilegeWithUiResult` |
+| 23 to 28 | `XUserGetTokenAndSignatureAsync`, `ResultSize`, `Result`, then the same three in UTF-16 |
+| 29 to 32 | `XUserResolveIssueWithUiAsync`, `XUserResolveIssueWithUiResult`, then both in UTF-16 |
+| 33 to 36 | `XUserRegisterForChangeEvent`, `XUserUnregisterForChangeEvent` (`bool`), `XUserGetSignOutDeferral`, `XUserCloseSignOutDeferralHandle` (no result) |
+| 37 to 41 | Not provided: their thunks pass 2, 2, 4, 4, and 2 arguments. Fail with `E_NOTIMPL` |
+| 42 | `XUserIsStoreUser` (`bool`) |
+| 43 to 46 | Not provided: 2, 1, 3, and 2 arguments. Fail with `E_NOTIMPL` |
+
+| Slot | Gamertag (cef4fac0) |
+|---|---|
+| 3 | `XUserGetGamertag` |
+
+| Slot | Devices (0cc6a956) |
+|---|---|
+| 3 to 5 | `XUserFindForDevice`, `XUserRegisterForDeviceAssociationChanged`, `XUserUnregisterForDeviceAssociationChanged` (`bool`) |
+| 6 to 8 | `XUserGetDefaultAudioEndpointUtf16`, `XUserRegisterForDefaultAudioEndpointUtf16Changed`, `XUserUnregisterForDefaultAudioEndpointUtf16Changed` (`bool`) |
+| 9, 10 | `XUserFindControllerForUserWithUiAsync`, `XUserFindControllerForUserWithUiResult` |
+
+xgameruntime-rs (MIT) names the same functions at the same slots up to 36, and at 42. It puts
+device association at 37 and 38, but the console's thunks there pass two arguments each, which
+doesn't fit. Their argument counts fit `XUserAddByIdWithUiAsync` and its result, and
+`XUserGetMsaTokenSilentlyAsync` with its result and result size, but nothing shows that yet.
+xgameruntime-rs's PC platform functions (remote connect and sign-in prompt handlers) fit slots 43
+to 46 by argument count. An offline user needs none of them, so they fail, logged once, until
+the game is seen calling one.
+
+**The user.** One handle, the same for every reference: `XUserDuplicateHandle` and every find
+add a reference and `XUserCloseHandle` drops one. Any other handle fails with `E_INVALIDARG`.
+
+* Local ID 1, and user ID 0x0009000000000001, in the range Xbox user IDs use.
+* Signed in, not a guest, age group Adult, and `XUserGetMaxUsers` is 1.
+* Gamertag "Player" for the classic, modern, and unique modern forms, and an empty suffix.
+* `XUserFindUserByLocalId` and `XUserFindUserById` give `E_GAMEUSER_USER_NOT_FOUND`
+  (0x89245104) for any other ID, as the console does.
+* `XUserIsStoreUser` is true, since the player owns the game.
+
+**Privileges.** Game DVR, cloud saved games (they map to local saves), and user-generated
+content are granted. Every other privilege the public GDK lists is online (multiplayer, parties,
+sessions, communications, cross-play, clubs, broadcast, friends, sharing) and is denied with
+reason `Restricted`, which titles show as a setting rather than a purchase prompt. An unknown
+privilege is denied and logged once. Resolving a privilege shows no UI: a granted one resolves
+with `S_OK`, a denied one with `E_ABORT`, as a dismissed dialog does.
+
+**Calls that can't succeed offline** fail through the queue, so the caller's completion routine
+runs as it would on the console:
+
+* Tokens and the gamer picture end with 0x80072EFD (`ERROR_INTERNET_CANNOT_CONNECT`), which xcl
+  reports as the console's answer when it can't reach the Xbox network. Titles take their
+  offline paths on it. The result functions return that status and set no data.
+* `XUserResolveIssueWithUiAsync` and `XUserFindControllerForUserWithUiAsync` end with `E_ABORT`,
+  as a dismissed dialog does.
+* `XUserGetSignOutDeferral` gives `E_GAMEUSER_DEFERRAL_NOT_AVAILABLE` (0x89245103), because no
+  sign-out ever comes.
+* `XUserGetDefaultAudioEndpointUtf16` gives `ERROR_NOT_FOUND`: there is no chat endpoint.
+
+**Callbacks.** Change, device association, and audio endpoint registrations get distinct tokens
+and are kept until unregistered, which always succeeds. Nothing calls them yet, because the user
+never changes. Every device belongs to the one user, so `XUserFindForDevice` returns it for any
+ID. Once input exists (M4), a gamepad has to be reported moving from no user to this user
+through the device association callback, on the title's queue, because some titles count a pad
+as connected only then ([hle-status.md](hle-status.md)).
+
 ## Tests
 
 `test_gdk` (nogame) covers:
@@ -281,6 +370,10 @@ through one thunk, so a caller address would only name the thunk.
 * `QueryApiImpl`'s answers, the services' `IUnknown` slots, and each service called through its
   slots as a thunk calls it: queues and async calls, the time-sensitive mark per thread, the
   unknown slots, XError's callback, and the feature query
+* XUser: adding the user through the queue, its handle and identity, finds for other IDs, the
+  gamertag and its buffer checks, the privilege policy and resolving it, the calls that fail
+  offline or without UI, registrations, devices, and its three interfaces called through their
+  slots, including `IUnknown` across a class
 * the initializers
 
 `test_imports` checks that the default policy binds the six entry points to these functions and

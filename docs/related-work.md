@@ -717,8 +717,10 @@ Public material; listed here so it can be found again.
   `XTaskQueueIsEmpty` while the thunk there passes no arguments ([gdk.md](gdk.md), "Slots"). Its
   entry-point signatures (`QueryApiImpl`, the three initializers, `UninitializeApiImpl`) agree
   with the start-up code we read, except that the code passes 64-bit packed versions to the two
-  newer initializers, where it takes 32-bit ones. Facts only so far; its sign-in and token code
-  is never taken (hard rule 5).
+  newer initializers, where it takes 32-bit ones. Its XUser vtables agree with the console's
+  thunks up to slot 36, at 42, and on the device interface, but not at 37 and 38, where it puts
+  device association and the console's thunks pass too few arguments for it ([gdk.md](gdk.md),
+  "XUser"). Facts only so far; its sign-in and token code is never taken (hard rule 5).
 * [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime) (LGPL-2.1) and
   [xodus-gaming/xgameruntime-docs](https://github.com/xodus-gaming/xgameruntime-docs) (GPL-3.0):
   the Wine IDL and the class and slot documentation that hle-status.md compares. Neither is

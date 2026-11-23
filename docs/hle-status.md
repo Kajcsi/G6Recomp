@@ -27,7 +27,8 @@ be checked as each service is built:
   `XTaskQueueDispatch`, `XUserCloseHandle`, and `XStoreIsLicenseValid`. Their stubs return
   that type's failure value, not `E_NOTIMPL`.
 * `XUserFindUserByLocalId` returns `E_GAMEUSER_USER_NOT_FOUND` on the console, where the
-  documentation says `ERROR_NOT_FOUND`. Follow the console.
+  documentation says `ERROR_NOT_FOUND`. Follow the console. **Taken**, for `XUserFindUserById`
+  too.
 * **Assumption** (Leonida): the main executable reaches the Game Runtime only through the
   `xgameruntime.lib` thunks, `QueryApiImpl` and then a vtable slot, not through named imports.
   So `runtime/gdk` is organised by interface ID and vtable, with each method at its slot.
@@ -54,6 +55,8 @@ be checked as each service is built:
   xbox-emulator adds the reverse on unplug, `E_GAMEUSER_USER_NOT_FOUND` from
   `XUserFindForDevice` for any ID but the pad's, and `E_ABORT` from
   `XUserFindControllerForUserWithUiAsync` with no pad, as a dismissed pairing dialog gives.
+  **Taken** for `E_ABORT`. The callbacks are kept but not called, and every device belongs to
+  the user, until input exists (M4).
 * `XGameSave` container names are 1 to 256 characters, otherwise
   `E_GS_INVALID_CONTAINER_NAME`, in the sync and async forms (xcl: an empty name deleted the
   whole save folder).
@@ -268,7 +271,7 @@ command line is never read or changed.
 The Game Runtime ([gdk.md](gdk.md)). Signatures and layouts are the public GDK's; XTaskQueue
 and XAsync follow libHttpClient's behavior (MIT), with no code taken. A title reaches these
 functions through `xgameruntime.dll`'s `QueryApiImpl` and the service vtables, not through named
-imports, so the rows give the public names and gdk.md, "Slots", gives each slot. Tested by
+imports, so the rows give the public names and gdk.md, "Slots" and "XUser", gives each slot. Tested by
 `test_gdk`, and the policy's binding by `test_imports`.
 
 **xgameruntime.dll**, bound by `default_game_policy()`. Every other export is `E_NOTIMPL`, and
@@ -276,7 +279,7 @@ imports, so the rows give the public names and gdk.md, "Slots", gives each slot.
 
 | Function | Status | Notes |
 |---|---|---|
-| `QueryApiImpl` | implemented | Static objects for the threading, error, and feature services. `REGDB_E_CLASSNOTREG` for any other service, logged once per class; `E_NOINTERFACE` for another interface. |
+| `QueryApiImpl` | implemented | Static objects for the threading, error, feature, XUser, and XUser device services. `REGDB_E_CLASSNOTREG` for any other service, logged once per class; `E_NOINTERFACE` for an interface the class doesn't have, logged once per class and interface. |
 | `InitializeApiImpl`, `InitializeApiImplEx`, `InitializeApiImplEx2` | implemented | Log their versions and flags once and succeed. |
 | `UninitializeApiImpl` | implemented | Succeeds. |
 | `XErrorReport` | implemented | Also exported by name. See the XError rows. |
@@ -304,6 +307,24 @@ imports, so the rows give the public names and gdk.md, "Slots", gives each slot.
 | `XAsyncRun` | implemented | |
 | `XAsyncGetStatus`, `XAsyncGetResultSize`, `XAsyncGetResult` | implemented | Checks in libHttpClient's order ([gdk.md](gdk.md), "Status and results"). |
 | `XAsyncCancel` | implemented | Asks the provider; a provider that can't cancel runs to its end. |
+| `XUserAddAsync`, `XUserAddResult` | implemented | Any options give the one offline user through the queue, without UI. |
+| `XUserDuplicateHandle`, `XUserCloseHandle`, `XUserCompare`, `XUserGetMaxUsers` | implemented | One handle with a reference count; any other handle gives `E_INVALIDARG`. `XUserCloseHandle` returns nothing. One user at most. |
+| `XUserGetLocalId`, `XUserGetId`, `XUserGetIsGuest`, `XUserGetState`, `XUserGetAgeGroup` | implemented | Local ID 1, user ID 0x0009000000000001, not a guest, signed in, adult. |
+| `XUserFindUserByLocalId`, `XUserFindUserById` | implemented | The user for its own IDs, `E_GAMEUSER_USER_NOT_FOUND` (0x89245104) for any other, as on the console. |
+| `XUserGetGamertag` | implemented | "Player", with an empty suffix. `E_NOT_SUFFICIENT_BUFFER` for a buffer too small for it. |
+| `XUserIsStoreUser` | implemented | True. |
+| `XUserCheckPrivilege` | implemented | Game DVR, cloud saved games, and user-generated content granted; online privileges denied as `Restricted`; an unknown one denied and logged once. |
+| `XUserResolvePrivilegeWithUiAsync`, `XUserResolvePrivilegeWithUiResult` | implemented | No UI: `S_OK` for a granted privilege, `E_ABORT` for a denied one, through the queue. |
+| `XUserGetTokenAndSignatureAsync` and its results, in both forms | offline | End with 0x80072EFD (`ERROR_INTERNET_CANNOT_CONNECT`) through the queue, as on a console that can't reach the Xbox network; logged once. |
+| `XUserGetGamerPictureAsync` and its results | offline | The same failure: there is no picture without the network. |
+| `XUserResolveIssueWithUiAsync`, `XUserResolveIssueWithUiResult`, in both forms | implemented | No UI: `E_ABORT` through the queue, as a dismissed dialog gives. |
+| `XUserRegisterForChangeEvent`, `XUserUnregisterForChangeEvent` | implemented | Kept and never called: the user never changes. Unregister returns `bool` and always succeeds. |
+| `XUserGetSignOutDeferral`, `XUserCloseSignOutDeferralHandle` | implemented | `E_GAMEUSER_DEFERRAL_NOT_AVAILABLE` (0x89245103): no sign-out ever comes. |
+| `XUserFindForDevice` | partial | Every device belongs to the one user. Once input exists, only connected devices should (M4). |
+| `XUserRegisterForDeviceAssociationChanged`, `XUserUnregisterForDeviceAssociationChanged` | partial | Kept and never called yet; a gamepad's arrival has to be reported through it once input exists (M4). |
+| `XUserGetDefaultAudioEndpointUtf16` and its change registration | implemented | No chat endpoint: `ERROR_NOT_FOUND`, logged once. The registration is kept and never called. |
+| `XUserFindControllerForUserWithUiAsync`, `XUserFindControllerForUserWithUiResult` | implemented | No pairing dialog: `E_ABORT` through the queue. |
+| XUser slots 15, 37 to 41, and 43 to 46 | stubbed | No thunk (15), or functions an offline user doesn't need: logged once with the caller, `E_NOTIMPL` ([gdk.md](gdk.md), "XUser"). |
 
 <!-- Template for a folder:
 
