@@ -43,9 +43,37 @@ BOOL WINAPI RemoveDirectoryW(LPCWSTR name);
 BOOL WINAPI RemoveDirectoryA(LPCSTR name);
 BOOL WINAPI DeleteFileW(LPCWSTR name);
 BOOL WINAPI DeleteFileA(LPCSTR name);
+
+// Moves keep to the mounts: a move at reboot (a null destination included) or into a hard link
+// fails with ERROR_INVALID_PARAMETER, and a mount's root can't move or be moved onto. MoveFile is
+// MoveFileEx with MOVEFILE_COPY_ALLOWED.
+BOOL WINAPI MoveFileWithProgressW(LPCWSTR existing, LPCWSTR destination,
+                                  LPPROGRESS_ROUTINE progress, LPVOID data, DWORD flags);
+BOOL WINAPI MoveFileWithProgressA(LPCSTR existing, LPCSTR destination, LPPROGRESS_ROUTINE progress,
+                                  LPVOID data, DWORD flags);
 BOOL WINAPI MoveFileExW(LPCWSTR existing, LPCWSTR destination, DWORD flags);
+BOOL WINAPI MoveFileExA(LPCSTR existing, LPCSTR destination, DWORD flags);
+BOOL WINAPI MoveFileW(LPCWSTR existing, LPCWSTR destination);
+BOOL WINAPI MoveFileA(LPCSTR existing, LPCSTR destination);
+
+// Copies read the source and write the destination; COPY_FILE_OPEN_SOURCE_FOR_WRITE needs a
+// writable source, and COPY_FILE_COPY_SYMLINK fails with ERROR_INVALID_PARAMETER.
+BOOL WINAPI CopyFileExW(LPCWSTR existing, LPCWSTR destination, LPPROGRESS_ROUTINE progress,
+                        LPVOID data, LPBOOL cancel, DWORD flags);
+BOOL WINAPI CopyFileExA(LPCSTR existing, LPCSTR destination, LPPROGRESS_ROUTINE progress,
+                        LPVOID data, LPBOOL cancel, DWORD flags);
+BOOL WINAPI CopyFileW(LPCWSTR existing, LPCWSTR destination, BOOL fail_if_exists);
+BOOL WINAPI CopyFileA(LPCSTR existing, LPCSTR destination, BOOL fail_if_exists);
 HRESULT WINAPI CopyFile2(PCWSTR existing, PCWSTR destination,
                          COPYFILE2_EXTENDED_PARAMETERS* parameters);
+
+// The usual save step: the replacement takes the replaced file's name, and the replaced file
+// moves to the backup when one is named. All three must be writable and none a mount's root. The
+// two reserved arguments must be null, or the call fails with ERROR_INVALID_PARAMETER.
+BOOL WINAPI ReplaceFileW(LPCWSTR replaced, LPCWSTR replacement, LPCWSTR backup, DWORD flags,
+                         LPVOID exclude, LPVOID reserved);
+BOOL WINAPI ReplaceFileA(LPCSTR replaced, LPCSTR replacement, LPCSTR backup, DWORD flags,
+                         LPVOID exclude, LPVOID reserved);
 
 namespace detail {
 // What CopyFile2 does on a host without one (Wine 9): CopyFileExW on the host paths, with the
@@ -67,7 +95,7 @@ BOOL WINAPI SetCurrentDirectoryW(LPCWSTR name);
 BOOL WINAPI SetCurrentDirectoryA(LPCSTR name);
 
 // Binds the functions above for the file and process-environment API sets, kernel32, and
-// kernelbase.
+// kernelbase, and those the legacy kernel32 API set has for it.
 void register_files(loader::ImportRegistry& imports);
 
 } // namespace g6::imports::kernelbase

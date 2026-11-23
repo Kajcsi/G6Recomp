@@ -337,6 +337,99 @@ TEST_CASE("directories and files are created, moved, and removed on the temp dri
     CHECK(!fs::exists(drives.temp() / "moved.txt"));
 }
 
+namespace {
+
+// A copy's progress routine, counting its calls in `data`.
+DWORD CALLBACK count_progress(LARGE_INTEGER /*total*/, LARGE_INTEGER /*copied*/,
+                              LARGE_INTEGER /*stream_size*/, LARGE_INTEGER /*stream_copied*/,
+                              DWORD /*stream*/, DWORD /*reason*/, HANDLE /*source*/,
+                              HANDLE /*destination*/, LPVOID data) {
+    ++*static_cast<int*>(data);
+    return PROGRESS_CONTINUE;
+}
+
+} // namespace
+
+TEST_CASE("every way to copy, move, or replace a file keeps to the mounts") {
+    const Drives drives;
+    CHECK(k::CopyFileW(L"G:\\data.txt", L"T:\\a.txt", FALSE) != FALSE);
+    CHECK(size_of(drives.temp() / "a.txt") == 5);
+    DWORD error =
+        last_error_of([] { CHECK(k::CopyFileA("G:\\data.txt", "T:\\a.txt", TRUE) == FALSE); });
+    CHECK_EQ(error, DWORD{ERROR_FILE_EXISTS});
+    error = last_error_of([] { CHECK(k::CopyFileW(L"T:\\a.txt", L"G:\\a.txt", FALSE) == FALSE); });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    CHECK(!fs::exists(drives.install() / "a.txt"));
+
+    // The guest's progress routine is called as the host copies.
+    int calls = 0;
+    CHECK(k::CopyFileExW(L"G:\\sub\\inner.txt", L"T:\\b.txt", &count_progress, &calls, nullptr,
+                         0) != FALSE);
+    CHECK(calls > 0);
+    CHECK(size_of(drives.temp() / "b.txt") == 5);
+    error = last_error_of([] {
+        CHECK(k::CopyFileExA("G:\\data.txt", "T:\\c.txt", nullptr, nullptr, nullptr,
+                             COPY_FILE_OPEN_SOURCE_FOR_WRITE) == FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    error = last_error_of([] {
+        CHECK(k::CopyFileExW(L"T:\\a.txt", L"T:\\c.txt", nullptr, nullptr, nullptr,
+                             COPY_FILE_COPY_SYMLINK) == FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_INVALID_PARAMETER});
+    CHECK(!fs::exists(drives.temp() / "c.txt"));
+
+    CHECK(k::MoveFileW(L"T:\\a.txt", L"T:\\moved.txt") != FALSE);
+    CHECK(fs::exists(drives.temp() / "moved.txt"));
+    CHECK(!fs::exists(drives.temp() / "a.txt"));
+    CHECK(k::MoveFileExA("T:\\moved.txt", "T:\\a.txt", 0) != FALSE);
+    error = last_error_of([] { CHECK(k::MoveFileA("G:\\data.txt", "T:\\x.txt") == FALSE); });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    error = last_error_of([] { CHECK(k::MoveFileW(L"T:\\a.txt", L"T:\\") == FALSE); });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    error = last_error_of([] {
+        CHECK(k::MoveFileWithProgressW(L"T:\\a.txt", L"T:\\link.txt", nullptr, nullptr,
+                                       MOVEFILE_CREATE_HARDLINK) == FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_INVALID_PARAMETER});
+    CHECK(!fs::exists(drives.temp() / "link.txt"));
+
+    // A save: the new file takes the old one's name, and the old one becomes the backup.
+    std::ofstream(drives.temp() / "save.dat", std::ios::binary) << "old";
+    std::ofstream(drives.temp() / "save.tmp", std::ios::binary) << "newer!";
+    CHECK(k::ReplaceFileW(L"T:\\save.dat", L"T:\\save.tmp", L"T:\\save.bak", 0, nullptr, nullptr) !=
+          FALSE);
+    CHECK(size_of(drives.temp() / "save.dat") == 6);
+    CHECK(size_of(drives.temp() / "save.bak") == 3);
+    CHECK(!fs::exists(drives.temp() / "save.tmp"));
+    std::ofstream(drives.temp() / "save.tmp", std::ios::binary) << "newest!";
+    CHECK(k::ReplaceFileA("T:\\save.dat", "T:\\save.tmp", nullptr, 0, nullptr, nullptr) != FALSE);
+    CHECK(size_of(drives.temp() / "save.dat") == 7);
+    CHECK(size_of(drives.temp() / "save.bak") == 3);
+
+    // Every end must be writable, and the reserved arguments null.
+    std::ofstream(drives.temp() / "save.tmp", std::ios::binary) << "x";
+    error = last_error_of([] {
+        CHECK(k::ReplaceFileW(L"G:\\data.txt", L"T:\\save.tmp", nullptr, 0, nullptr, nullptr) ==
+              FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    error = last_error_of([] {
+        CHECK(k::ReplaceFileW(L"T:\\save.dat", L"T:\\save.tmp", L"G:\\save.bak", 0, nullptr,
+                              nullptr) == FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_ACCESS_DENIED});
+    int reserved = 0;
+    error = last_error_of([&] {
+        CHECK(k::ReplaceFileW(L"T:\\save.dat", L"T:\\save.tmp", nullptr, 0, nullptr, &reserved) ==
+              FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_INVALID_PARAMETER});
+    CHECK(size_of(drives.install() / "data.txt") == 5);
+    CHECK(size_of(drives.temp() / "save.dat") == 7);
+    CHECK(fs::exists(drives.temp() / "save.tmp"));
+}
+
 TEST_CASE("the current directory, full paths, and the temp path are console paths") {
     const Drives drives;
     wchar_t buffer[MAX_PATH] = {};

@@ -163,7 +163,8 @@ logged once by CLSID or class name.
 
 Win32 path functions on the console's drives ([io.md](io.md)), for imports from
 `api-ms-win-core-file-*` (the current-directory functions from
-`api-ms-win-core-processenvironment-*`), `kernel32`, and `kernelbase`. Each resolves its path
+`api-ms-win-core-processenvironment-*`, and four move and copy functions from
+`api-ms-win-core-kernel32-legacy-*`), `kernel32`, and `kernelbase`. Each resolves its path
 through `runtime/io`, checks the mount's access, and calls the host function on the host path.
 A path that leaves the mounts gives the error Win32 gives for it; a write to the read-only
 install gives `ERROR_ACCESS_DENIED`. The handles are host handles, so the handle functions stay
@@ -175,7 +176,9 @@ forwarded.
 | `FindFirstFileW`, `FindFirstFileA`, `FindFirstFileExW`, `FindFirstFileExA` | implemented | Wildcards only in the last component. A mount's root lists `.` and `..`, unlike a drive's root. |
 | `GetFileAttributesW`, `GetFileAttributesA`, `GetFileAttributesExW`, `GetFileAttributesExA`, `SetFileAttributesW` | implemented | |
 | `CreateDirectoryW`, `CreateDirectoryA`, `RemoveDirectoryW`, `RemoveDirectoryA`, `DeleteFileW`, `DeleteFileA` | implemented | A mount's root can't be removed. |
-| `MoveFileExW`, `CopyFile2` | implemented | Both ends mounted and writable (the source of a copy may be read-only). Move flags other than replace, copy, write-through, and fail-if-not-trackable are refused, and so is copying a symlink. The host's `CopyFile2` is looked up at run time, not imported: Wine 9, under Proton, has none and binds an import of it to a stub that ends the process (reported by Leonida). Without it, `CopyFileExW` does the copy with the flags it knows and the cancel flag, and the progress routine isn't called. |
+| `MoveFileW`, `MoveFileA`, `MoveFileExW`, `MoveFileExA`, `MoveFileWithProgressW`, `MoveFileWithProgressA` | implemented | Both ends mounted and writable, and neither a mount's root. Flags other than replace, copy, write-through, and fail-if-not-trackable are refused with `ERROR_INVALID_PARAMETER`, so moves at reboot (a null destination included) and hard links are. `MoveFile` is `MoveFileEx` with `MOVEFILE_COPY_ALLOWED`, which xcl measured on Windows 11. The progress routine is guest code, called directly. The legacy kernel32 API set carries `MoveFileW`, `MoveFileA`, and `MoveFileExA`. |
+| `CopyFileW`, `CopyFileA`, `CopyFileExW`, `CopyFileExA`, `CopyFile2` | implemented | The source mounted (writable only with `COPY_FILE_OPEN_SOURCE_FOR_WRITE`), the destination mounted and writable; copying a symlink as a link is refused. `CopyFile` is `CopyFileEx` with `COPY_FILE_FAIL_IF_EXISTS` for its flag. The host's `CopyFile2` is looked up at run time, not imported: Wine 9, under Proton, has none and binds an import of it to a stub that ends the process (reported by Leonida). Without it, `CopyFileExW` does the copy with the flags it knows and the cancel flag, and the progress routine isn't called. `CopyFileW` comes from `api-ms-win-core-file-l2-1-2`, `CopyFileA` from the legacy kernel32 API set. |
+| `ReplaceFileW`, `ReplaceFileA` | implemented | The usual save step. The replaced file, the replacement, and the backup when one is named must all be mounted and writable, and none a mount's root. The two reserved arguments must be null, or the call fails with `ERROR_INVALID_PARAMETER`. xcl and xbox-emulator both pointed out that the move, copy, and replace functions need the same redirection as `CreateFileW`. |
 | `GetDiskFreeSpaceExW` | implemented | The host volume behind the mount. |
 | `GetTempPathW`, `GetTempPath2W` | implemented | `T:\`. |
 | `GetFullPathNameW`, `GetFullPathNameA` | implemented | Console paths only. |

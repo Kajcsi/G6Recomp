@@ -85,8 +85,9 @@ do. Each one resolves its path, checks the mount's access, and calls the host fu
 host path. The handles they return are host handles, so the functions that take a handle stay
 forwarded.
 
-**Win32** (`runtime/imports/kernelbase`), for imports from `api-ms-win-core-file-*`,
-`api-ms-win-core-processenvironment-*`, `kernel32`, and `kernelbase`:
+**Win32** (`runtime/imports/kernelbase`), for imports from `api-ms-win-core-file-*` (the ANSI
+`api-ms-win-core-file-ansi-*` sets included), `api-ms-win-core-processenvironment-*`, `kernel32`,
+and `kernelbase`, and the four move and copy functions `api-ms-win-core-kernel32-legacy-*` has:
 
 * `CreateFileW`, `CreateFileA`, and `CreateFile2`;
 * `FindFirstFileW`, `FindFirstFileA`, `FindFirstFileExW`, and `FindFirstFileExA`;
@@ -94,7 +95,10 @@ forwarded.
   and `SetFileAttributesW`;
 * `CreateDirectoryW`, `CreateDirectoryA`, `RemoveDirectoryW`, `RemoveDirectoryA`, `DeleteFileW`,
   and `DeleteFileA`;
-* `MoveFileExW` and `CopyFile2`. Both ends must be mounted, and the destination writable;
+* every way to move, copy, or replace a file: `MoveFileW`, `MoveFileA`, `MoveFileExW`,
+  `MoveFileExA`, `MoveFileWithProgressW`, `MoveFileWithProgressA`, `CopyFileW`, `CopyFileA`,
+  `CopyFileExW`, `CopyFileExA`, `CopyFile2`, `ReplaceFileW`, and `ReplaceFileA`. Every end must
+  be mounted and writable, except the source of a copy, and none may be a mount's root;
 * `GetDiskFreeSpaceExW`, reporting the host volume behind the mount;
 * `GetTempPathW` and `GetTempPath2W`, which give `T:\`;
 * `GetFullPathNameW`, `GetFullPathNameA`, `GetCurrentDirectoryW`, `GetCurrentDirectoryA`,
