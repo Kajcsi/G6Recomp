@@ -168,6 +168,9 @@ std::pair<size_t, bool> length_of(Encoding encoding, uint32_t w, uint32_t next) 
     case Encoding::kVop1:
     case Encoding::kVopc: return {1, extra_dword_src0(field(w, 0, 9))};
     case Encoding::kVop3:
+        // An interpolation's src0 field holds its attribute, not a source code.
+        return {2, (field(next, 0, 9) == kSrcLiteral && !vop3_interp(field(w, 16, 10))) ||
+                       field(next, 9, 9) == kSrcLiteral || field(next, 18, 9) == kSrcLiteral};
     case Encoding::kVop3p:
         return {2, field(next, 0, 9) == kSrcLiteral || field(next, 9, 9) == kSrcLiteral ||
                        field(next, 18, 9) == kSrcLiteral};
@@ -320,7 +323,8 @@ void decode_operands(Instruction& insn) {
                 b.dst(vgpr(vdst));
             }
         }
-        b.src(source9(field(d1, 0, 9), literal));
+        b.src(vop3_interp(insn.opcode) ? op(OperandKind::kAttribute, field(d1, 0, 9))
+                                       : source9(field(d1, 0, 9), literal));
         b.src(source9(field(d1, 9, 9), literal));
         b.src(source9(field(d1, 18, 9), literal));
         break;
@@ -776,6 +780,9 @@ std::string operand_text(const Operand& operand) {
                    : fmt::format("{}", std::bit_cast<float>(operand.value));
     case OperandKind::kLiteral: return fmt::format("{:#x}", operand.value);
     case OperandKind::kOther: return fmt::format("src{}", operand.value);
+    case OperandKind::kAttribute:
+        return fmt::format("attr{}.{}{}", operand.value & 0x3F, "xyzw"[(operand.value >> 6) & 3],
+                           (operand.value & 0x100) != 0 ? " high" : "");
     }
     return "?";
 }
@@ -797,6 +804,10 @@ std::string text(const Instruction& insn) {
         line += separator + operand_text(operand);
         separator = ", ";
     }
+    if (insn.encoding == Encoding::kVinterp) {
+        // ATTR and ATTRCHAN, the only fields left.
+        return line + fmt::format(", attr{}.{}", insn.imm, "xyzw"[insn.imm2 & 3]);
+    }
     if (insn.imm != 0 || insn.imm2 != 0 || insn.mask != 0 || insn.op_sel != 0) {
         line += fmt::format(" ; imm {} imm2 {} mask {:#x}", insn.imm, insn.imm2, insn.mask);
         if (insn.op_sel != 0) {
@@ -813,6 +824,33 @@ std::string text(const Instruction& insn) {
         line += fmt::format(" ; far target {:#x}", *insn.far_target);
     }
     return line;
+}
+
+bool vop3_interp(uint16_t opcode) {
+    switch (opcode) {
+    case kVop3InterpP1F32:
+    case kVop3InterpP2F32:
+    case kVop3InterpMovF32:
+    case kVop3InterpP1llF16:
+    case kVop3InterpP1lvF16:
+    case kVop3InterpP2F16: return true;
+    default: return false;
+    }
+}
+
+std::optional<InterpAttribute> interp_attribute(const Instruction& insn) {
+    if (insn.encoding == Encoding::kVinterp) {
+        return InterpAttribute{.attribute = static_cast<uint8_t>(insn.imm),
+                               .channel = static_cast<uint8_t>(insn.imm2)};
+    }
+    if (insn.encoding == Encoding::kVop3 && insn.src_count > 0 &&
+        insn.src[0].kind == OperandKind::kAttribute) {
+        const uint32_t value = insn.src[0].value;
+        return InterpAttribute{.attribute = static_cast<uint8_t>(value & 0x3F),
+                               .channel = static_cast<uint8_t>((value >> 6) & 3),
+                               .high = (value & 0x100) != 0};
+    }
+    return std::nullopt;
 }
 
 bool uses_gds(const Instruction& insn) {

@@ -74,6 +74,7 @@ enum class OperandKind : uint8_t {
     kInlineFloat, // value: the float's bits (0.5, 1, 2, 4, their negatives, 1/(2*pi))
     kLiteral,     // value: the trailing 32-bit literal
     kOther,       // value: the operand code, not modelled yet
+    kAttribute,   // value: a VOP3 interpolation's src0 field (see interp_attribute)
 };
 
 struct Operand {
@@ -177,6 +178,21 @@ std::string operand_text(const Operand& operand);
 // One line of assembly-like text, for looking at programs on the user's own machine.
 std::string text(const Instruction& instruction);
 
+// Which attribute channel an interpolation reads. VINTRP has ATTR and ATTRCHAN fields. The VOP3
+// forms keep the attribute in bits 0-5 of the src0 field, the channel in bits 6-7, and, for the
+// f16 forms, a `high` bit in bit 8 that selects the upper f16 of the channel (LLVM's encoding for
+// gfx10). The decoder gives that src0 as an OperandKind::kAttribute.
+struct InterpAttribute {
+    uint8_t attribute = 0;
+    uint8_t channel = 0;
+    bool high = false;
+};
+// Nothing for an instruction that isn't an interpolation.
+std::optional<InterpAttribute> interp_attribute(const Instruction& instruction);
+// Whether a VOP3 opcode is one of the interpolations (v_interp_p1_f32, p2_f32, mov_f32, and the
+// f16 forms p1ll, p1lv and p2).
+bool vop3_interp(uint16_t opcode);
+
 // Opcodes the analysis relies on.
 inline constexpr uint16_t kSoppEndpgm = 0x01;
 inline constexpr uint16_t kSoppBranch = 0x02;
@@ -198,6 +214,12 @@ inline constexpr uint16_t kDsGwsLast = 0x1D;  // ds_gws_barrier
 inline constexpr uint16_t kDsConsume = 0x3D;
 inline constexpr uint16_t kDsAppend = 0x3E;
 inline constexpr uint16_t kDsOrderedCount = 0x3F;
+inline constexpr uint16_t kVop3InterpP1F32 = 0x200;
+inline constexpr uint16_t kVop3InterpP2F32 = 0x201;
+inline constexpr uint16_t kVop3InterpMovF32 = 0x202;
+inline constexpr uint16_t kVop3InterpP1llF16 = 0x342;
+inline constexpr uint16_t kVop3InterpP1lvF16 = 0x343;
+inline constexpr uint16_t kVop3InterpP2F16 = 0x35A;
 inline constexpr uint32_t kCodeEndWord = 0xBF9F0000;
 
 // Whether a DS instruction works on the global data share or the global wave sync unit, which

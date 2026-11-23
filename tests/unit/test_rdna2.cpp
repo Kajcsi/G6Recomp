@@ -281,6 +281,12 @@ TEST_CASE("memory, interpolation and export instructions decode") {
     CHECK_EQ(interp.imm, int64_t{1});
     CHECK_EQ(interp.imm2, int64_t{1});
     CHECK(interp.dst[0] == vgpr(2));
+    CHECK_EQ(r::text(interp), std::string("v_interp_p1_f32 v2, v0, attr1.y"));
+    const std::optional<r::InterpAttribute> interp_attr = r::interp_attribute(interp);
+    REQUIRE(interp_attr.has_value());
+    CHECK_EQ(interp_attr->attribute, uint8_t{1});
+    CHECK_EQ(interp_attr->channel, uint8_t{1});
+    CHECK(!interp_attr->high);
 
     // exp mrt0 v0, v1, v2, v3 done vm
     const r::Instruction exp = one({0xF800180F, 0x03020100});
@@ -290,6 +296,43 @@ TEST_CASE("memory, interpolation and export instructions decode") {
     CHECK_EQ(exp.imm2, int64_t{6});
     REQUIRE(exp.src_count == 4);
     CHECK(exp.src[3] == vgpr(3));
+}
+
+TEST_CASE("VOP3 interpolations keep their attribute, channel and high bit in src0") {
+    // v_interp_p2_f16 v3, attr2.z high, v1, v4: src0 holds 2 | 2 << 6 | 1 << 8.
+    const r::Instruction p2 = one({0xD75A0003, 0x04120382});
+    CHECK(p2.encoding == r::Encoding::kVop3);
+    CHECK_EQ(r::mnemonic(p2), std::string("v_interp_p2_f16"));
+    REQUIRE(p2.src_count == 3);
+    CHECK(p2.src[0].kind == r::OperandKind::kAttribute);
+    CHECK(p2.src[1] == vgpr(1));
+    CHECK(p2.src[2] == vgpr(4));
+    CHECK_EQ(r::text(p2), std::string("v_interp_p2_f16 v3, attr2.z high, v1, v4"));
+    const std::optional<r::InterpAttribute> high = r::interp_attribute(p2);
+    REQUIRE(high.has_value());
+    CHECK_EQ(high->attribute, uint8_t{2});
+    CHECK_EQ(high->channel, uint8_t{2});
+    CHECK(high->high);
+
+    // v_interp_p1ll_f16 v5, attr0.w, v0: the low half.
+    const r::Instruction p1ll = one({0xD7420005, 0x000200C0});
+    CHECK_EQ(r::mnemonic(p1ll), std::string("v_interp_p1ll_f16"));
+    const std::optional<r::InterpAttribute> low = r::interp_attribute(p1ll);
+    REQUIRE(low.has_value());
+    CHECK_EQ(low->attribute, uint8_t{0});
+    CHECK_EQ(low->channel, uint8_t{3});
+    CHECK(!low->high);
+
+    // An attribute field of 255 (attr63.w) isn't the literal code: no literal follows.
+    const std::vector<r::Instruction> swept =
+        r::decode(bytes({0xD6020000, 0x000000FF, 0xBF810000}));
+    REQUIRE(swept.size() == 2);
+    CHECK_EQ(swept[0].dwords, uint8_t{2});
+    CHECK_EQ(r::mnemonic(swept[0]), std::string("v_interp_mov_f32"));
+    CHECK_EQ(r::mnemonic(swept[1]), std::string("s_endpgm"));
+
+    // Other VOP3 instructions aren't interpolations.
+    CHECK(!r::interp_attribute(one({0xD5030000, 0x00020501})).has_value());
 }
 
 TEST_CASE("cut-off and unknown instructions are marked, not guessed") {
