@@ -14,6 +14,7 @@
 #include "g6/io/text.h"
 #include "g6/loader/import_registry.h"
 #include "g6/log.h"
+#include "g6/text.h"
 
 namespace g6::imports::kernelbase {
 namespace {
@@ -232,15 +233,14 @@ void to_ansi(const WIN32_FIND_DATAW& wide, WIN32_FIND_DATAA& ansi) {
     ansi.nFileSizeLow = wide.nFileSizeLow;
     ansi.dwReserved0 = wide.dwReserved0;
     ansi.dwReserved1 = wide.dwReserved1;
-    const std::string name = io::narrow(wide.cFileName);
-    const std::string alternate = io::narrow(wide.cAlternateFileName);
-    const size_t name_length = std::min(name.size(), std::size(ansi.cFileName) - 1);
-    const size_t alternate_length =
-        std::min(alternate.size(), std::size(ansi.cAlternateFileName) - 1);
-    std::memcpy(ansi.cFileName, name.data(), name_length);
-    ansi.cFileName[name_length] = '\0';
-    std::memcpy(ansi.cAlternateFileName, alternate.data(), alternate_length);
-    ansi.cAlternateFileName[alternate_length] = '\0';
+    // A name longer than the field in the code page is cut after a whole character.
+    const std::string name = narrow_prefix(wide.cFileName, std::size(ansi.cFileName) - 1, CP_ACP);
+    const std::string alternate =
+        narrow_prefix(wide.cAlternateFileName, std::size(ansi.cAlternateFileName) - 1, CP_ACP);
+    std::memcpy(ansi.cFileName, name.data(), name.size());
+    ansi.cFileName[name.size()] = '\0';
+    std::memcpy(ansi.cAlternateFileName, alternate.data(), alternate.size());
+    ansi.cAlternateFileName[alternate.size()] = '\0';
 }
 
 } // namespace

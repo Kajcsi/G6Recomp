@@ -27,6 +27,11 @@ g6_add_test(test_entropy LABEL nogame
     SOURCES unit/test_entropy.cpp
     LIBS g6common)
 
+# Narrow strings cut at whole characters, as Windows' ANSI functions cut a result that doesn't fit.
+g6_add_test(test_text LABEL nogame
+    SOURCES unit/test_text.cpp
+    LIBS g6common)
+
 # The RPF9 reader (docs/rpf.md) on an archive the test builds from made-up files.
 g6_add_test(test_rpf9 LABEL nogame
     SOURCES unit/test_rpf9.cpp

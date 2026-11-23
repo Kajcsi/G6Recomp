@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include "g6/log.h"
+#include "g6/text.h"
 #include "loader_impl.h"
 #include "text.h"
 
@@ -72,6 +73,20 @@ DWORD copy_truncated(std::basic_string_view<Char> text, Char* buffer, DWORD size
     }
     text.copy(buffer, size - 1);
     buffer[size - 1] = Char{0};
+    error.fail(ERROR_INSUFFICIENT_BUFFER);
+    return size;
+}
+
+// The ANSI form: a path that doesn't fit is cut after a whole character, so a double-byte
+// character is never split, and the result is still reported as truncated.
+DWORD copy_truncated_ansi(std::wstring_view text, LPSTR buffer, DWORD size, LastError& error) {
+    const std::string ansi = narrow(text, CP_ACP);
+    if (buffer == nullptr || size == 0 || ansi.size() < size) {
+        return copy_truncated(std::string_view(ansi), buffer, size, error);
+    }
+    const std::string cut = narrow_prefix(text, size - 1, CP_ACP);
+    cut.copy(buffer, cut.size());
+    buffer[cut.size()] = '\0';
     error.fail(ERROR_INSUFFICIENT_BUFFER);
     return size;
 }
@@ -376,8 +391,7 @@ DWORD WINAPI GetModuleFileNameA(HMODULE module, LPSTR buffer, DWORD size) {
         const Loader::Impl* impl = active_loader();
         if (impl != nullptr) {
             if (const auto path = known_module_path(*impl, module)) {
-                const std::string ansi = narrow(*path, CP_ACP);
-                return copy_truncated(std::string_view(ansi), buffer, size, error);
+                return copy_truncated_ansi(*path, buffer, size, error);
             }
         }
     } catch (...) {

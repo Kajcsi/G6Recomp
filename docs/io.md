@@ -133,7 +133,9 @@ particular to the following:
   becomes HLE that maps the path back to a console path.
 
 **ANSI functions** convert with the active code page, as desktop Windows does. Which code page
-the console uses is still unknown.
+the console uses is still unknown. A name cut to fit a fixed field, such as `cFileName` in
+`WIN32_FIND_DATAA`, ends after a whole character, so a double-byte or UTF-8 sequence is never
+split (`g6::narrow_prefix`, tested by `test_text`).
 
 ## Known differences
 
