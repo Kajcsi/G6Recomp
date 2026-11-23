@@ -1,0 +1,43 @@
+# Builds the tools and runs the tests that need no game files. CI never sees game files:
+# G6_NOGAME skips the configure-time check for them, and only `nogame` tests run.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Reject game files and derived data
+        shell: bash
+        run: scripts/check-clean.sh --all
+
+      # The runner's preinstalled LLVM can be older than its MSVC standard library accepts.
+      # Pin the version the project is developed with.
+      - name: Install LLVM 22.1.8
+        run: |
+          choco upgrade llvm --version=22.1.8 --allow-downgrade -y --no-progress
+          & "$env:ProgramFiles\LLVM\bin\clang-cl.exe" --version
+
+      - name: Set up the MSVC environment (Windows SDK, linker, Ninja)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        run: cmake --preset windows-debug -DG6_NOGAME=ON -DG6_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build --preset windows-debug
+
+      - name: Test
+        run: ctest --preset windows-debug -L nogame

@@ -1,0 +1,36 @@
+# User-supplied game files and everything derived from them (CLAUDE.md hard rules 1 and 2).
+/private/
+/build/
+/out/
+
+# A game install placed in the repo root. Keep it out even though it should live in private/.
+/GTA6.*/
+
+# Game and console package formats, wherever they turn up.
+*.rpf
+*.ttpf
+*.xvd
+*.xvc
+*.msixvc
+*.appx
+*.msix
+*.bk2
+*.bik
+*.awc
+
+# Binaries. Nothing we ship is a prebuilt binary; build outputs live in out/.
+*.exe
+*.dll
+*.pdb
+*.lib
+*.obj
+*.exp
+*.ilk
+
+# Local tool state
+/CMakeUserPresets.json
+.vs/
+.vscode/
+.idea/
+*.user
+.cache/

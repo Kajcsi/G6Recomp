@@ -1,0 +1,4 @@
+; A made-up console DLL the guest delay-loads. Only its import library is built.
+LIBRARY g6fakedelay.dll
+EXPORTS
+    g6fakedelay_value

@@ -1,0 +1,29 @@
+LIBRARY hook_guest
+EXPORTS
+    g6h_rip_prologue
+    g6h_jcc_entry
+    g6h_tiny
+    g6h_loop
+    g6h_calls
+    g6h_framed
+    g6h_mid_regs
+    g6h_mid_flags
+    g6h_mid_df
+    g6h_mid_redirect
+    g6h_mid_ymm
+    g6h_mid_framed
+    g6h_mid_load
+    g6h_after_call
+    g6h_handled
+    g6h_cpuid
+    g6h_xgetbv
+    g6h_seh_catch_mid
+    g6h_seh_through_framed
+    g6h_load_or_fault
+    g6h_xgetbv_fault
+    g6h_cpp_catch_mid
+    g6h_cpp_through_framed
+    g6h_cleanups
+    g6h_get_data_value
+    g6h_sites DATA
+    g6h_data_value DATA

@@ -1,0 +1,6 @@
+---
+# The guest's classes keep external linkage so their RTTI names stay plain (.?AVSquare@@ rather
+# than a name inside an anonymous namespace), and multiple and virtual inheritance are exactly
+# what the RTTI scan is tested on.
+InheritParentConfig: true
+Checks: '-misc-use-internal-linkage,-misc-multiple-inheritance'

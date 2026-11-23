@@ -1,0 +1,5 @@
+---
+# ppl.h's parallel_for pairs _malloca with _freea, which the static analyzer misreads as
+# freeing alloca memory, and reports inside the SDK's malloc.h where no NOLINT can reach.
+InheritParentConfig: true
+Checks: '-clang-analyzer-unix.Malloc,-clang-analyzer-unix.MismatchedDeallocator'

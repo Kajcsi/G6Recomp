@@ -1,0 +1,448 @@
+# Execution model: native execution with HLE
+
+**Status: approved on 2026-11-21.** Phases 0 (documentation), 1 (loader), 2 (hook engine), 3
+(side DLLs), and 4 (`x64recomp scan`) are done. `CLAUDE.md` summarizes this model, and `docs/codegen.md` describes the frozen
+recompiler backend.
+
+## Decision
+
+Run the game's code directly on the host CPU, and keep high-level emulation (HLE) of the
+console's OS services and APIs underneath it, the way Wine and Proton run Windows programs.
+Keep the recompiler, but only for the jobs it is better at: analysing the binaries, and as a
+frozen, tested fallback.
+
+"Emulation" here means only that HLE layer. The CPU is not emulated, and the console hardware
+is not emulated. A hardware-level emulator would need the console's system software, which we
+don't have and won't use, and a model of its custom GPU. That is far harder than either
+option and is ruled out.
+
+## Why
+
+N64Recomp and UnleashedRecomp recompile because MIPS and PowerPC code can't run on a PC. This
+game is x86-64 code for a Windows-derived OS, so the host CPU runs it as it is. The recompiler
+already keeps everything native on purpose (real guest addresses, the real stack, the host's
+MXCSR and x87 state), so translation adds cost and risk without enabling anything that native
+execution can't do.
+
+Most of the remaining work doesn't depend on this choice. GPU translation, the GDK, kernel
+services, I/O, audio, input, and `memory_tracker` are the same either way. Only the CPU layer
+changes:
+
+| | Recompiled | Native |
+|---|---|---|
+| Exceptions | Needs a guest unwinder (open) | The game's own `.pdata`, registered with Windows |
+| TLS | Rewrite every `gs:` access to a guest TEB (open) | The host's real TEB (see below) |
+| Fibers | Stack switching inside `GuestContext` (open) | Work as they do on Windows |
+| Callbacks from host APIs | An adapter per callback type | A plain function pointer call |
+| HLE functions | Read arguments out of `GuestContext` | Ordinary C++ with the API's real signature |
+| Coverage | Every function found, every instruction translated | Nothing to find or translate |
+| Main executable | Generated C++ in the millions of lines, long rebuilds | No build step |
+| Speed | Same at best, probably slower | Native |
+| Rules 2 and 3 | Generated code derived from the game, kept local | Nothing generated |
+
+What the side DLLs of 1.0.2.1 show so far:
+
+* No `syscall` instructions. `int 0x29` is Windows' standard fail-fast and `int3` is padding.
+* Every `gs:` access uses one of four TEB fields: `0x30` (the TEB's own address), `0x58` (the
+  TLS array), `0x08` (stack base), and `0x10` (stack limit). They sit at the same offsets on
+  desktop Windows. The stack fields are read through the TEB's own address, which is how
+  `x64recomp scan` found the stack base ([scan.md](scan.md)).
+* They import mostly Windows API sets (`api-ms-win-core-*`, `api-ms-win-crt-*`), plus a few
+  console-only DLLs (memory, D3D12.X, XAudio2) and, in the two networking libraries, WinHTTP
+  and the crypto API.
+* Three of them have a TLS directory, so a loader must support static TLS from the start.
+
+The main executable gets the same checks (see
+[Pre-flight checks](#pre-flight-checks-for-the-main-executable)).
+
+## What runs natively
+
+### Loader
+
+`runtime/loader` maps the game's modules itself, building on the existing PE readers
+(`common/`) and on `runtime/kernel/image_loader`, which already maps an image at a chosen base
+and applies relocations. It doesn't hand the modules to the Windows loader.
+
+The Windows loader would set up TLS and exception tables for free, but it binds imports by
+DLL name, so it would decide which host functions the game reaches. Several things depend on
+controlling that:
+
+* Rule 5: networking APIs must never reach the host, even through an API set.
+* Console paths in CRT calls (`fopen` and friends) must go through `runtime/io`, not straight
+  to the host's CRT.
+* The console's CRT DLLs share names with the host's, and some API set names resolve to the
+  host's own DLLs whatever is on the search path.
+* Stand-in DLLs for the console's system DLLs would have to export the game's full import
+  lists, which are dumped tables under rule 2 unless they are generated on the user's machine.
+
+The fallback, if the TLS approach below fails in Phase 1, is the Windows loader with stand-in
+DLLs generated locally at configure time.
+
+The loader (`g6::loader::Loader`):
+
+1. **Maps** each module and the guest modules it needs: imported DLLs, delay-loaded ones, and
+   DLLs its exports forward to, when they are found in the search paths and aren't networking
+   DLLs. Each goes at its preferred base, or wherever there is room with relocations applied,
+   or at an explicit base. Code sections become executable once the module is bound.
+2. **Binds imports** through guest modules' exports and a registry of implementations, using
+   the policy below. Delay-load imports are bound at load time like the others, so the guest's
+   delay-load helper never runs; the module handle slot gets the guest module's base or a pseudo
+   handle (step 7). Export forwarders are followed, up to 16 deep.
+3. **Registers exception tables** with `RtlAddFunctionTable`, so Windows unwinds guest frames
+   the same way it unwinds the host's. SEH and C++ exceptions then work across guest and host
+   frames, because the calling convention and unwind format are identical.
+4. **Sets up static TLS** (see below).
+5. **Sets the security cookie** in the load config to a random value with the top 16 bits
+   clear, as the Windows loader does, and **leaves CFG alone**. The guest's check and dispatch
+   pointers keep their default no-op routines. Still open: the test host isn't built with CFG
+   enforced; if `g6recomp.exe` is, host code calling guest callbacks may need the guest's code
+   marked as valid call targets.
+6. **Initializes the new modules in dependency order**: TLS callbacks, then `DllMain`, for each
+   DLL; the executable gets its TLS callbacks only. If a `DllMain` fails, that DLL and the ones
+   this load already initialized get `PROCESS_DETACH` in reverse, and the whole load is unmapped.
+   Each detach is a full one, TLS callbacks first and then `DllMain`, as on an unload. That is
+   what Windows 11 does with a DLL whose `DllMain` fails. No Microsoft documentation states it,
+   so `test_loader` measures it with `LoadLibrary` on an original fixture and compares.
+   `run_entry_point` starts the executable's entry point on a new thread with the stack reserve
+   from its PE header, passing the PEB as Windows does.
+7. **Replaces the guest-visible loader functions** (`GetModuleHandle[Ex]`, `GetProcAddress`,
+   `LoadLibrary[Ex]`, `FreeLibrary`, `DisableThreadLibraryCalls`, `GetModuleFileName`, and
+   `RtlPcToFileHeader`) with HLE versions that see only guest modules and the registry. A guest
+   module's handle is its base. Any other DLL the registry provides gets a **pseudo handle**, an
+   address in a reserved, inaccessible range that stands for the DLL name; `GetProcAddress` on
+   it resolves through the registry under that name. A guest can't use them to load a host DLL
+   or fetch a host function outside the policy. `RtlPcToFileHeader` is there because the C++
+   runtime's throw uses it to find the image base of its type information, and Windows doesn't
+   know modules it didn't load.
+
+### Import policy
+
+Every imported function lands in exactly one category. Anything not listed is a stub.
+
+| Category | What it does | Example |
+|---|---|---|
+| Forward | Bound straight to the host function of the same name | Synchronization, interlocked, most of the CRT |
+| HLE | Our implementation in `runtime/imports` or `runtime/gdk` | Memory, D3D12.X, XUser, XGameSave, file paths |
+| Offline | Reports no connectivity; never forwarded (rule 5) | WinHTTP, sockets, XCurl, libHttpClient |
+| Stub | Logs the DLL, symbol or ordinal, and caller once, then returns an error | Everything else |
+
+* HLE functions become plain C++ with the public signature, named after the public Win32 or GDK
+  name, as the conventions already say. `GuestContext` isn't involved.
+* A stub is a small thunk generated at load time. It passes its slot number to a common
+  handler, which takes the caller from the return address. Its return value comes from a
+  per-DLL default with per-function overrides, so a stub never looks like success:
+  `E_NOTIMPL` for HRESULT APIs, and zero plus `ERROR_CALL_NOT_IMPLEMENTED` for Win32 APIs.
+* A test checks the policy table: no networking DLL may be forwarded, whatever the table says
+  elsewhere.
+* CRT API sets mostly forward to the host's Universal CRT. The functions that take paths are
+  HLE wrappers that translate console paths through `runtime/io`.
+
+### TLS and the TEB
+
+The guest uses the host thread's real TEB. Stack limits, the TLS array, fiber data, and last
+error are all the host's own values, and they are correct.
+
+Static TLS for modules we map ourselves uses only documented behaviour:
+
+* The runtime ships four tiny **donor DLLs** (`g6tls0.dll` to `g6tls3.dll`), each holding one
+  TLS block, and loads them normally. Windows then gives every thread a block for each donor,
+  including threads started later by host libraries. A donor must import at least one
+  function: Windows sets up the static TLS of a DLL loaded at run time while binding its
+  imports, and a DLL with none keeps index 0 and gets no blocks.
+* Each guest module with a TLS directory gets one donor. The loader writes that donor's TLS
+  index into the guest module's own index variable.
+* A thread notifier, `g6threads.dll`, also loaded normally, passes `DLL_THREAD_ATTACH` and
+  `DLL_THREAD_DETACH` on to the loader. On attach the loader copies each guest module's TLS
+  template into its block, then runs the guest's TLS callbacks and `DllMain` in initialization
+  order; on detach it runs them in reverse. The template is copied from the mapped image, so
+  pointers in it are relocated.
+* The notifier also keeps a list of the threads it has seen. When a module loads, the loader
+  fills its block on every thread in the list. A thread that started before the notifier loaded
+  (that is, before the first `Loader` was created) isn't in the list and keeps the donor's
+  contents, except the thread doing the load, which is filled directly. So the runtime creates
+  the `Loader` before it starts other threads.
+* A donor holds 64 KiB (`G6_TLS_DONOR_CAPACITY` in CMake), and the loader rejects a module that
+  needs more or aligns its TLS to more than 16 bytes. Sizing the donors from the pinned build's
+  TLS directories at configure time is later work.
+* **A guest executable gets TLS index 0.** Windows always gives an executable's TLS block index
+  0. Code in an executable built with `/GA` relies on that: it takes its block from slot 0 of
+  the TLS array and never reads its index variable (`x64recomp scan` lists such sites as *fixed
+  slot*). With a donor's index, that code would read the host executable's block instead.
+  * So the host executable gives up the start of its own block. It links
+    `runtime/loader/support/exe_tls.c` (the CMake object library `g6exetls`) in place of the C
+    runtime's TLS support. That file writes out the host's TLS directory itself, so the block
+    starts with an area of `G6_TLS_DONOR_CAPACITY` bytes that nothing of the host's uses. The
+    host's own `thread_local` data follows, and the C runtime's TLS callbacks still run. Two
+    exported functions mark the offer.
+  * When the loader starts, it checks the offer: the area must start the block, Windows must
+    have given the host index 0, and the calling thread's block must hold the area's template.
+    A misbuilt host is an error rather than a silent fallback.
+  * A guest executable then gets the area as its block, just like a donor's, and the loader
+    writes 0 into its index variable. Guest DLLs always get donors. Under a host that doesn't
+    link `g6exetls`, a guest executable gets a donor too, and the log says so.
+  * Each thread's block grows by the area (64 KiB). The runtime's own executable must link
+    `g6exetls`.
+  * `test_exe_tls` (CI) checks all of this. It uses an original fixture built with `/GA` and
+    covers threads started before and after the load, the entry point's thread, and a second
+    load after an unload. It also checks the host's own thread-locals, including one the C
+    runtime initializes through a TLS callback. With the lending turned off, the test fails.
+  * xcl met the same problem and solves it differently ([related-work.md](related-work.md)).
+    This design is our own; none of xcl's code was taken.
+* **A pointer to a thread's TLS array is only good until the next DLL with static TLS loads.**
+  The array has room for a fixed number of indices. When a DLL's index doesn't fit, Windows
+  gives every thread a longer array and moves the TEB's pointer. The blocks stay where they are,
+  and only the array holding their addresses moves. **Measured** on Windows 11 (build 26200):
+  the array starts with room for 9 indices and grows 8 at a time. So the loader reads the array
+  from the TEB each time it needs it, after any load, and never keeps a copy. Other threads'
+  arrays are read without the Windows loader lock. So a host DLL with static TLS loading on
+  another thread at that moment could replace an array mid-read. Whether that matters depends on
+  whether Windows frees the old array at once, which hasn't been checked.
+
+  * **What went wrong:** the loader once read the array before loading the donors and used that
+    copy to check each donor's block. That worked while few host DLLs had static TLS. Linking
+    `shell32` (with `ole32`) into `test_side_dlls` loads five system DLLs that have their own:
+    KernelBase, gdi32full, shell32, combase, and ole32. Together with the test executable they
+    take indices 0 to 5, so the donors got 6 to 9. Loading the fourth donor moved the array, and
+    the check read past the end of the old one. That crashed the first `Loader` before it
+    mapped any guest, which looked like the side DLLs failing to initialize.
+  * The real runtime will load D3D12, SDL, and other host libraries first, so the loader must
+    not depend on how many TLS indices they take. `test_tls_order` (CI) checks that.
+    * Before the loader starts, it loads 0 to 24 copies of an original DLL with static TLS
+      (`tests/fixtures/tls_order`), one count per child process.
+    * In each child it then checks a guest module's TLS on two threads.
+    * It also checks that the blocks Windows made earlier are still in place once the array
+      moves.
+    * In 12 of the 25 children the array moves while the loader starts. Before the fix, every
+      one of those children crashed.
+
+If the main executable reads TEB fields that desktop Windows doesn't have, the few
+instructions involved are patched to call a stub (see Hooks). Recompilation isn't needed.
+
+### Threads, fibers, and callbacks
+
+Guest threads are host threads created through the HLE `CreateThread`, which applies the
+console core layout (affinity, priorities) as HLE. Fibers forward to the host. A guest callback
+handed to a host API, such as a thread start routine, a wait callback, or an XTaskQueue
+callback, is called directly.
+
+### CPU features
+
+Native code executes the real `cpuid`, so by default the game would see the host CPU. The
+loader patches every `cpuid` and `xgetbv` site in guest modules with a one-byte trapping
+instruction. The exception handler answers through the existing masking in
+`runtime/cpu/cpuid.cpp`, so the game keeps seeing the intersection of Zen 2 and the host and
+takes only the code paths the console ran. The sites are few and run rarely, so the cost
+doesn't matter.
+
+The opposite risk is an instruction Zen 2 has but the host lacks, used without a feature
+check. Examples include SHA, ADX, CLWB, RDPID, and AMD's SSE4a on some AVX2 hosts. These mostly
+come from intrinsics in crypto and memory code. The pre-flight scan lists every such site
+for the host. The fixes, cheapest first:
+
+1. Emulate the instruction in a vectored exception handler (fine for rare sites).
+2. Patch the site to call a C++ stub (for hot sites).
+3. Recompile the function (last resort; see below).
+
+### Side DLLs
+
+| Module | Plan |
+|---|---|
+| vcruntime140, vcruntime140_1, msvcp140*, concrt140, vccorlib140, vcomp140 | Run natively: the console builds the game shipped with |
+| XCurl, libHttpClient.GDK | Never mapped. The executable's imports from them bind to offline HLE |
+| Bink2Scarlett | Run natively. Its audio, memory, and file calls go through HLE |
+| amd_fidelityfx_loader_xbox | Run natively. Its `LoadLibrary` goes through the HLE loader |
+| amd_fidelityfx_upscaler_xbox | **Replaced**, never mapped. Its shaders carry no DXIL, so the public PC FidelityFX SDK (MIT) takes its place behind the same five entry points, at M3 |
+| XboxBvhBuilder | **Replaced**, never mapped. It builds the console GPU's own BVH format, which no translation could turn into desktop acceleration structures, so DXR builds in `runtime/gpu` take its place, at M3 |
+
+The two former "investigate" rows were settled in [side-dlls.md](side-dlls.md), with the shader
+findings in [shaders.md](shaders.md). A replaced DLL is a registry rule the loader honours:
+it never maps the file, and imports from it go through the policy.
+
+### Hooks and patches
+
+Hooks keep the same registration: config by build ID and address, with a prose comment
+describing what the original does. Their bodies are still written from behaviour (rule 4).
+The mechanism becomes runtime patching of the mapped image:
+
+* **Replacement**: overwrite the function's entry with a jump to a C++ function that has the
+  same signature. Calling the original goes through a trampoline that holds the relocated
+  first instructions.
+* **Mid-function hook**: a jump to a generated stub, which saves the registers and flags into
+  a context structure and calls C++ with it. The C++ can change registers or redirect control.
+  The stub then restores everything, runs the relocated instructions, and jumps back. Stubs get
+  unwind info, so exceptions pass through them.
+* **Data patch**: write bytes at an address after load (constants, limits, tables).
+
+The engine is ours, built on Zydis (already a dependency). Function discovery already knows
+the function boundaries and the branch targets inside them, so it can reject a patch window
+that something else jumps into. Microsoft Detours (MIT) is the alternative, but it doesn't do
+mid-function register contexts. Relocated instructions exist only in memory at run time, never
+in the repo.
+
+## What stays recompiled
+
+### x64recomp as the analysis tool
+
+`info`, `imports`, `exports`, `functions`, and jump-table resolution stay, and a new `scan`
+command ([scan.md](scan.md)) adds:
+
+* instructions the host CPU lacks, by site;
+* every `fs:` and `gs:` offset, any PEB access, and how TLS accesses pick their slot;
+* `syscall` and other system instructions;
+* `cpuid` and `xgetbv` sites;
+* code that reads, writes, or takes the address of other code;
+* TLS, relocation, CFG, and import facts.
+
+The loader uses the same library for patch-window checks, and will use it for its pre-flight
+report, cached per build ID in the user's data directory.
+
+### Code generation, frozen
+
+The code generator, `GuestContext`, the dispatch table, and the differential tests stay in the
+tree. They keep building and stay in CI, but get no new instruction work and no runtime
+integration. They are there for two cases:
+
+* **A function patching can't fix.** Mixing recompiled and native code on one thread needs a
+  bridge first. Recompiled code keeps the guest stack in `ctx.rsp`, while its own C++ frames
+  use the real stack, so the two need separate stacks and hand-written unwind info at the
+  switch. That bridge gets its own plan if a real case shows up.
+* **A non-x86 host.** If an ARM64 port is ever wanted, translation is the only route, and this
+  is where it starts.
+
+### Dropped from the roadmap
+
+* The guest unwinder, whole-program `gs:` rewriting, and the guest TEB object.
+* Import placeholder addresses in the dispatch table, and host-to-guest callback adapters.
+* Whole-program regeneration of the game in the default build (the `regen` target).
+* `cpuid` masking inside generated code. Masking lives on through site patching.
+
+## Hard rules under this model
+
+* **Rules 1–3** get easier: the default path generates nothing from game files. The
+  exceptions are the TLS size header and the pre-flight cache, which stay local.
+* **Rule 4** is unchanged for hook bodies.
+* **Rule 5** depends on the import policy, which native execution makes even more important:
+  native code can call anything it can reach. Everything the guest reaches goes through
+  bound imports or the HLE loader functions, networking is never forwarded, and a test enforces
+  that. The pre-flight scan flags PEB walking, which could let code find host modules by
+  itself.
+* **Rule 6** is unchanged.
+
+## Pre-flight checks for the main executable
+
+Run `x64recomp scan` and the loader's dry run on the main executable before building anything
+on it:
+
+1. A relocation table, or a preferred base that is free in the host process. Section raw data
+   aligned to 0x200-byte sectors: Windows reads whole sectors, and our reader copies exactly
+   `SizeOfRawData`, which agree only for aligned sections ([related-work.md](related-work.md)).
+2. TEB offsets beyond the four above, and any PEB access.
+3. `syscall` or other system instructions.
+4. Instructions the target hosts lack, and the `cpuid`/`xgetbv` sites.
+5. Whether TLS accesses read the module's TLS index or assume slot 0.
+6. The imported DLLs by category, and what the stub list looks like on a first run.
+7. Whether the code verifies its own bytes. If it does, stop and decide together how to
+   proceed before any hooking. This plan doesn't cover working around it.
+8. Which drive letters its path strings use, so `runtime/io` mounts the right ones
+   ([io.md](io.md), "The model"). `G:` for the package and `T:` for scratch space are
+   assumptions until then.
+
+## Phases
+
+Phases 1, 2, and 4 don't need the main executable.
+
+0. **Adopt.** Approve this plan. Rewrite the affected parts of `CLAUDE.md`: what the project
+   is, why native execution, the architecture, the hard parts, commands, and milestones. Then
+   the README, `docs/codegen.md` (marked as the frozen backend), and `docs/hle-status.md`.
+1. **Loader on original fixtures (CI).** Fixture DLLs built from our own C test:
+   * static TLS from threads started before and after load;
+   * SEH and C++ exceptions crossing guest, host, and guest frames;
+   * fibers;
+   * ordinal and delay-load imports from a made-up console DLL name;
+   * the stub's log line and error value;
+   * loading at a non-preferred base;
+   * the policy test.
+
+   Exit: all of these pass in CI. If the donor-DLL TLS fails here, switch to the Windows-loader
+   fallback before going further.
+
+   Status: implemented in `runtime/loader`, with `test_import_policy` and `test_loader` on the
+   fixtures in `tests/fixtures/loader_guest` (a DLL with the static C runtime and CFG, and an
+   executable). Beyond the list above, the tests cover the HLE loader functions, an explicit
+   base, the security cookie, an executable's entry point, and failed loads. They also cover the
+   order of process notifications on a load, an unload, and a load whose `DllMain` fails,
+   compared with Windows' own loader on `init_guest`, a fixture with no C runtime. The donor-DLL
+   TLS works, so the fallback isn't needed. `test_tls_order` starts the loader after other DLLs
+   with static TLS have taken the low indices (see "TLS and the TEB").
+2. **Hook engine (CI).** Replacement with call-original, mid-function hooks with a register
+   context, data patches, and trap patching (`cpuid`), all on fixtures, including an exception
+   thrown through a hooked function.
+
+   Status: implemented in `runtime/loader` (`patcher.cpp`, public types in
+   `g6/loader/patches.h`), with `test_hooks` on `tests/fixtures/hook_guest`. `docs/hooks.md`
+   holds the design and the patching rules. The analysis code moved into the `x64analysis`
+   library, which the loader links.
+3. **Side DLLs natively (local, `game` label).** The console CRT DLLs initialize and run under
+   the loader. Settle the two "investigate" rows.
+
+   Status: implemented as planned in [side-dlls.md](side-dlls.md):
+   * `runtime/imports` holds `default_game_policy()`, the xmem HLE, and COM and WinRT
+     activation behind an allowlist;
+   * the loader honours replaced DLLs.
+
+   Tests:
+   * `test_imports` (CI) checks the policy and xmem.
+   * `test_side_dlls` (local) checks that all 12 mapped side DLLs initialize, each with only
+     the stubs the policy chose.
+   * The same test runs `tests/fixtures/crt_guest`, an original `/MD` DLL, on the console's
+     C++ runtime: exceptions, threads, locales, `atomic::wait`, OpenMP, and PPL.
+
+   Both investigate rows end in replacement, implemented at M3.
+4. **`x64recomp scan`.** Built and tested on fixtures and the side DLLs.
+
+   Status: implemented in `tools/x64recomp/src/scan.cpp`, described in [scan.md](scan.md).
+   Tests:
+   * `test_scan` (CI) runs on `tests/fixtures/scan_guest`, an original DLL with one function per
+     finding.
+   * `test_recomp` (CI) covers the header facts on synthetic images.
+   * `test_game_files` (local) checks the side DLLs.
+
+   The side DLLs pass every check:
+   * no system instructions;
+   * only the four expected TEB fields;
+   * TLS accessed only through each module's own index;
+   * no code reads or writes;
+   * the only instructions Zen 2 lacks are libHttpClient's 24 AVX-512 ones, behind a feature
+     check.
+
+   The scan and the hook engine share a map of the C++ exception tables (FH3 and FH4), so the
+   engine checks mid-function hooks in C++ functions by itself
+   ([hooks.md](hooks.md#c-exception-functions)). Every side DLL's tables read. The scan reports
+   how many functions still need a hand check: catch and cleanup funclets, functions whose catch
+   continuations no source names, and functions under any other handler. A handler that only
+   checks the stack cookie needs no hand check
+   ([hooks.md](hooks.md#functions-under-a-cookie-check-alone)). A window may not
+   start at a call's return address, where the unwinder would mistake the patch jump for an
+   epilogue ([hooks.md](hooks.md#windows-at-return-addresses)).
+5. **Main executable.** Pre-flight, then map it and run it to its entry point. Then the
+   stub-first loop from `CLAUDE.md`: add a logging stub, confirm the game gets further, then
+   implement.
+
+## Milestones
+
+* **M0**: PE readers, function discovery, import table. Unchanged and done for the side DLLs.
+* **M1** (rewritten): the native loader runs guest code, with imports bound by policy and
+  exceptions, TLS, and fibers working. The side DLLs initialize, and the main executable
+  reaches its entry point and initializes its heaps.
+* **M2–M5**: unchanged.
+
+## Decisions (2026-11-21)
+
+1. Native execution is the default model.
+2. The code generator stays in the tree, frozen but tested: it's finished, and it's the only
+   route to a non-x86 host.
+3. The hook engine is our own, on Zydis, rather than Microsoft Detours, for mid-function
+   contexts and the patch-window checks.
+4. The game's view of the CPU stays at Zen 2, through patched `cpuid` and `xgetbv` sites.
+5. The project keeps the name G6Recomp. It comes from the original recompilation plan, and
+   nothing depends on it.

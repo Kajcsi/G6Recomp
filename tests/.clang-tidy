@@ -1,0 +1,8 @@
+---
+# Tests register themselves from static initializers by design, and REQUIRE unwinds with an
+# exception whose failure has already been reported, so the runner catches it and moves on.
+InheritParentConfig: true
+Checks: >
+  -bugprone-throwing-static-initialization
+CheckOptions:
+  bugprone-empty-catch.AllowEmptyCatchForExceptions: 'g6::test::RequireFailed'

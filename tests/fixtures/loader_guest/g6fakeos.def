@@ -1,0 +1,9 @@
+; A made-up console system DLL. Only its import library is built: no g6fakeos.dll exists
+; anywhere, so the native loader must bind every import from it through the import registry.
+LIBRARY g6fakeos.dll
+EXPORTS
+    g6fake_add
+    g6fake_bound_ordinal @5 NONAME
+    g6fake_missing
+    g6fake_hresult
+    g6fake_missing_ordinal @9 NONAME

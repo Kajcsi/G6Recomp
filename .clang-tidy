@@ -1,0 +1,32 @@
+---
+# Kept to checks that find real bugs. Style is clang-format's job; naming follows the
+# public Win32/GDK names for shims, which a naming check would fight. Guest addresses are
+# integers that the runtime turns into pointers on purpose, so no-int-to-ptr is off.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  clang-analyzer-*,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion,
+  -misc-include-cleaner,
+  -misc-use-anonymous-namespace,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -modernize-use-nodiscard,
+  -modernize-use-designated-initializers,
+  performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  readability-braces-around-statements,
+  readability-container-size-empty,
+  readability-else-after-return,
+  readability-redundant-*,
+  readability-simplify-boolean-expr
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*[/\\](common|tools|runtime|game|app|tests)[/\\].*'
+FormatStyle: file
