@@ -517,7 +517,8 @@ Phases 1, 2, and 4 don't need the main executable.
    epilogue ([hooks.md](hooks.md#windows-at-return-addresses)).
 5. **Main executable.** Pre-flight, then map it and run it to its entry point. Then the
    stub-first loop from `CLAUDE.md`: add a logging stub, confirm the game gets further, then
-   implement.
+   implement. [boot.md](boot.md) keeps the stops in order, starting with the ones Leonida
+   measured on the same executable.
 
    Rules other projects found running an executable this way (reported by Leonida, measured
    against native runs there):
