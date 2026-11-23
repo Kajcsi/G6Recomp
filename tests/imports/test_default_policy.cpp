@@ -227,6 +227,20 @@ TEST_CASE("the default policy forwards nothing to a networking DLL") {
     }
 }
 
+TEST_CASE("the Game Runtime is never the host's") {
+    // A PC with the Gaming Services has its own xgameruntime.dll, which talks to Xbox services;
+    // the guest gets runtime/gdk instead (hard rule 5).
+    ImportRegistry policy = default_game_policy();
+    CHECK(policy.dll_binding("xgameruntime.dll") != Binding::Forward);
+    CHECK(!policy.host_provides("xgameruntime.dll"));
+    for (const char* name :
+         {"QueryApiImpl", "XGameRuntimeInitialize", "XTaskQueueCreate", "XAsyncRun"}) {
+        INFO(name);
+        CHECK(policy.resolve("xgameruntime.dll", Symbol::by_name(name)).binding !=
+              Binding::Forward);
+    }
+}
+
 TEST_CASE("COM and WinRT activation is never forwarded") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"api-ms-win-core-com-l1-1-0.dll", "combase.dll", "ole32.dll"}) {

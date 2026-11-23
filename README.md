@@ -23,7 +23,7 @@ Early development. **Nothing is playable yet.**
 |---|---|
 | M0: PE readers, `.pdata`-seeded function discovery, import table | In progress: readers, discovery, and jump-table resolution are done and tested against the side DLLs of build 1.0.2.1 |
 | M1: the native loader runs the game's code; imports, exceptions, TLS, and heaps work | In progress: the loader, hook engine, import policy, and pre-flight scan are done and tested on original fixtures, and the game's side DLLs initialize under it |
-| M2: threads, memory, and I/O stable through boot | Started: the install is mounted read-only and the path functions run on it |
+| M2: threads, memory, and I/O stable through boot | Started: the install is mounted read-only and the path functions run on it; the Game Runtime's task queues and async calls are implemented and tested |
 | M3: first frame, then the title screen | Not started |
 | M4: in-game and controllable | Not started |
 | M5: enhancements, settings UI, Linux under Proton verified | Not started |

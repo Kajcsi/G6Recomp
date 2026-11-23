@@ -334,6 +334,10 @@ g6_add_test(test_imports LABEL nogame
             imports/test_registry.cpp imports/test_xmem.cpp
     LIBS g6imports runtimeobject)
 
+g6_add_test(test_gdk LABEL nogame
+    SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp
+    LIBS g6gdk)
+
 # The guest executable for test_crt_exit: original, and release /MD like the game's executable,
 # so atexit, static destructors, and thread_local destructors reach the CRT's exit functions
 # through its imports. onecore_apiset instead of kernel32, as in console code. A folder of its own

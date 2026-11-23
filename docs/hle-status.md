@@ -16,7 +16,7 @@ Console-only imports are named after the game's import table, or `<dll>_ord<N>` 
 by ordinal only.
 
 Notes for `runtime/gdk`, reported by other projects ([related-work.md](related-work.md)) and to
-be checked when it is built:
+be checked as each service is built:
 
 * Some GDK libraries reach the Game Runtime without importing it: they load `xgameruntime.dll`
   by name, look up `QueryApiImpl`, and call services by interface ID and vtable slot.
@@ -66,7 +66,8 @@ Notes for `runtime/kernel`:
 
 So far there is the loader's own HLE, and `runtime/imports` with the default import policy
 (`default_game_policy()`), xmem, COM and WinRT activation, and the path functions on
-`runtime/io`. `runtime/gdk` doesn't exist yet.
+`runtime/io`. `runtime/gdk` has XTaskQueue and XAsync, which the guest reaches once the Game
+Runtime's interfaces are bound.
 The rows below cover what the side DLLs import ([side-dlls.md](side-dlls.md)). The networking
 libraries are never mapped: the game's imports from them bind to offline implementations. The
 full list comes from the main executable: `x64recomp imports <exe>` gives the starting list.
@@ -250,6 +251,31 @@ command line is never read or changed.
 | `__p___argc`, `__p___argv`, `__p___wargv`, `__p__acmdln`, `__p__wcmdln`, `__p__pgmptr`, `__p__wpgmptr` | implemented | Stable pointers to the guest's own globals. |
 | `_get_pgmptr`, `_get_wpgmptr` | implemented | `EINVAL` through the handler before the configure of their width, or for a null out pointer. |
 | `_get_narrow_winmain_command_line`, `_get_wide_winmain_command_line` | implemented | The rest of `_acmdln` or `_wcmdln` after the program name and the blanks after it; an empty string for a null line. |
+
+## runtime/gdk (XTaskQueue and XAsync)
+
+The base the other Game Runtime services run on ([gdk.md](gdk.md)). Signatures and layouts are
+the public GDK's; behavior follows libHttpClient's (MIT), with no code taken. A title reaches
+them through `QueryApiImpl` and the `XThreadingImpl` vtable, not through named imports, so
+these rows give the public names; the slots come with that binding. Tested by `test_gdk`.
+
+| Function | Status | Notes |
+|---|---|---|
+| `XTaskQueueCreate`, `XTaskQueueCreateComposite` | implemented | Manual, ThreadPool, SerializedThreadPool, and Immediate ports on the host thread pool. A composite queue shares other queues' ports and terminates only its own callbacks. |
+| `XTaskQueueGetPort`, `XTaskQueueDuplicateHandle`, `XTaskQueueCloseHandle` | implemented | Counted handles; a handle that isn't a live queue gives `E_GAMERUNTIME_INVALID_HANDLE` (0x8924010C). |
+| `XTaskQueueDispatch` | implemented | Any port, not only Manual ones. Returns `bool`, not HRESULT. |
+| `XTaskQueueIsEmpty` | implemented | Private to the Game Runtime. Covers the whole port, which other queues may share. |
+| `XTaskQueueTerminate` | implemented | Waiting callbacks, delayed ones, and waiters run once more as canceled; work port, then completion port, then the callback. |
+| `XTaskQueueSubmitCallback`, `XTaskQueueSubmitDelayedCallback` | implemented | `E_ABORT` once the queue is terminating. Delayed callbacks run in due order. |
+| `XTaskQueueRegisterWaiter`, `XTaskQueueUnregisterWaiter` | implemented | Through a duplicate of the caller's handle, re-armed after each callback. |
+| `XTaskQueueRegisterMonitor`, `XTaskQueueUnregisterMonitor` | implemented | Unregister waits out calls under way on other threads. |
+| `XTaskQueueSuspendTermination`, `XTaskQueueResumeTermination` | implemented | |
+| `XTaskQueueGetCurrentProcessTaskQueue`, `XTaskQueueSetCurrentProcessTaskQueue` | implemented | Two ThreadPool ports by default, made on first use; null leaves no process queue. |
+| `XAsyncBegin`, `XAsyncBeginAlloc` | implemented | `E_NO_TASK_QUEUE` (0x800701AB) without a queue, `E_ABORT` on a terminating one. A failing begin step ends the call while `XAsyncBegin` returns `S_OK`. `XAsyncBeginAlloc` is private to the Game Runtime. |
+| `XAsyncSchedule`, `XAsyncComplete` | implemented | A second schedule before the first has run, and a work step that succeeds without completing, give `E_UNEXPECTED`. |
+| `XAsyncRun` | implemented | |
+| `XAsyncGetStatus`, `XAsyncGetResultSize`, `XAsyncGetResult` | implemented | Checks in libHttpClient's order ([gdk.md](gdk.md), "Status and results"). |
+| `XAsyncCancel` | implemented | Asks the provider; a provider that can't cancel runs to its end. |
 
 <!-- Template for a folder:
 
