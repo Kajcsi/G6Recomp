@@ -24,6 +24,7 @@
 #include "g6/imports/files.h"
 #include "g6/imports/registry.h"
 #include "g6/imports/xmem.h"
+#include "g6/input/game_input.h"
 #include "g6/loader/crash_report.h"
 
 namespace g6::imports {
@@ -330,6 +331,12 @@ void add_console(ImportRegistry& imports) {
     xmem::register_xmem(imports);
     add_game_runtime(imports);
 
+    // GameInput: runtime/input's stand-in for GameInputCreate, which the executable imports as
+    // ordinal 1 (the host's GameInput.dll has it there too). Nothing else is imported from it;
+    // an unknown DLL's stubs would return zero, which an HRESULT caller reads as success.
+    imports.stub_dll("gameinput.dll", StubResult::hresult());
+    imports.hle("gameinput.dll", Symbol::by_ordinal(1),
+                reinterpret_cast<const void*>(&input::GameInputCreate));
     // D3D12.X, until runtime/gpu wraps it, but for what the executable calls before the device.
     imports.stub_dll("d3d12_xs.dll", StubResult::hresult());
     d3d12_xs::register_d3d12_xs(imports);

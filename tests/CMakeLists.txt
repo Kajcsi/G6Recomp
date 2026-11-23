@@ -349,6 +349,11 @@ g6_add_test(test_memory_tracker LABEL nogame
     SOURCES gpu/test_memory_tracker.cpp
     LIBS g6gpu)
 
+# The GameInput stand-in (runtime/input) the boot uses until M4.
+g6_add_test(test_input LABEL nogame
+    SOURCES input/test_game_input.cpp
+    LIBS g6input)
+
 g6_add_test(test_gdk LABEL nogame
     SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp gdk/test_game_runtime.cpp gdk/test_user.cpp
             gdk/test_game_save.cpp

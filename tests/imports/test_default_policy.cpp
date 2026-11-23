@@ -248,6 +248,19 @@ TEST_CASE("the app-state notifications are the host's") {
     CHECK(resolution.binding == Binding::Forward);
 }
 
+TEST_CASE("GameInputCreate is our stand-in, and the rest of GameInput an HRESULT stub") {
+    ImportRegistry policy = default_game_policy();
+    // GameInputCreate is ordinal 1, as on the host; the stand-in is ours, never the host's.
+    Resolution resolution = policy.resolve("gameinput.dll", Symbol::by_ordinal(1));
+    CHECK(resolution.binding == Binding::Hle);
+    CHECK(resolution.address != nullptr);
+    CHECK(resolution.address != host_function(L"gameinput.dll", "GameInputCreate"));
+    // Anything else in it is an HRESULT stub, never a zero that reads as S_OK.
+    resolution = policy.resolve("gameinput.dll", Symbol::by_ordinal(2));
+    CHECK(resolution.binding == Binding::Stub);
+    CHECK_EQ(resolution.stub.value, kNotImplemented);
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",
