@@ -783,11 +783,25 @@ translation depends on it.
     shared memory) passes ballot, prefix-count, and lane-read tests on NVIDIA and WARP.
   * **Reported:** native wave64 passes on five Radeon GPUs, RDNA 2 and RDNA 4. RDNA 2 runs 32
     lanes unless a shader asks for 64; RDNA 4 defaults to 64.
-  * **Reported** by Xbox2Windows: Intel HD 530 and UHD GPUs report 16 lanes, and WARP 4.
+  * **Reported** by Xbox2Windows: Intel HD 530 and UHD GPUs report 16 lanes. WARP's width
+    depends on its build: 4 lanes for Windows 10's in-box WARP, 8 for app-local WARP 1.0.22.
   * **Reported** by xcl (RTX 3080): a wave64 program split into two 32-lane halves breaks on
     `v_mbcnt` over a mask that isn't a constant (lanes 32 to 63 undercount), on a VOP3 `v_cmp`
     that writes an SGPR pair, and on 32-bit `s_bcnt`, `s_ff1` or `s_flbit` applied to one word
     of a mask. Each of these has to see the whole 64-lane mask.
+  * **Reported** by xcl (RTX 5070 Ti, RX 9070): NVIDIA, whose range is 32 to 32, refuses a
+    `[WaveSize(64)]` compute pipeline. xcl now runs each console wave as two 32-lane host waves
+    that exchange through groupshared memory. Only masks, `readlane`/`readfirstlane`,
+    `ds_bpermute` and GLC scalar loads need the exchange; DPP, swizzles and `permlane` stay in a
+    half. It cost 1.3 times with one console wave per group and about 5 times with four. The
+    exchange waits on its partner, which assumes the waves of a group make progress together;
+    WARP doesn't promise that and runs neither 32 nor 64 lanes, so WARP can't test this form.
+* **Compute lane order.** **Reported** by xcl: desktop drivers don't keep a 2-D or 3-D compute
+  group's threads in order within a wave. An RX 9070 lays them out in 2x2 quads, and NVIDIA's
+  waves of an 8x8x4 group don't hold consecutive indices either; 1-D groups stay in order. The
+  console's waves hold consecutive threads, so a translated 2-D or 3-D compute program that uses
+  DPP, readlane, `ds_bpermute` or `v_mbcnt` has to hand each host wave the next block of console
+  threads itself.
   * A translator has to know which shaders depend on the wave width. Each program's setup word
     gives the width it was compiled for (see "Wave size" above).
 * **Mesh shaders.** **Reported** by xcl: a Ryzen 7000 integrated GPU (RDNA 2) runs wave64 but
@@ -797,8 +811,16 @@ translation depends on it.
     `PSV0`.
   * **Reported** by Xbox2Windows: WARP 10.0.26100.9818 removes the device for a mesh pipeline
     without a pixel shader.
+  * **Reported** by Xbox2Windows: without mesh shaders, compute dispatches can write each
+    triangle into its own range of one buffer, and vertex draws then read the ranges in order
+    into shared colour and depth targets. Depth order held on a GTX 1060 and on Windows 10's
+    in-box WARP, with the draw order reversed and the depths swapped.
 * **Feature levels on likely hosts** (Xbox2Windows): an RX 570 on vkd3d-proton exposes shader
   model 6.6, a GTX 1060 runs DXR tier 1.0, and the in-box WARP of Windows 10 19041 has no DXR.
+  Tier 1.0 runs `DispatchRays` but not inline `RayQuery`, which needs tier 1.1 and shader model
+  6.5, so translating the 64 ray-traced compute shaders to `RayQuery` leaves tier 1.0 hosts out.
+  Refitting a structure needs `ALLOW_UPDATE` on the build as well as `PERFORM_UPDATE`; without
+  it the GTX 1060 removed the device.
 * **64-bit image atomics.** **Reported** by xbox-emulator: `RWTexture<uint64_t>` on an
   `R32G32_UINT` texture, which needs shader model 6.6 and
   `AtomicInt64OnTypedResourceSupported` from `D3D12_FEATURE_DATA_D3D12_OPTIONS9`. 685 of our
@@ -812,6 +834,9 @@ translation depends on it.
     rounds it, and an RTX 3080 Ti truncates it.
   * **Reported** by Xbox2Windows (GTX 1060, WARP): a sampler used both for comparison and for
     ordinary sampling needs two host samplers.
+  * **Reported** by Xbox2Windows: Windows 10's in-box WARP (10.0.19041.5794) picks mip 1 for a
+    per-sample `MinLod` clamp of 1.5625 under point mip filtering, where `SampleLevel` at the
+    same LOD picks mip 2. So that WARP is no reference for the clamp-then-round rule above.
 * **Blending.** **Reported** by xbox-emulator: fp16 and `R11G11B10_FLOAT` blending saturates a
   finite overflow on WARP and on its GPU.
 * **f16 NaN.** **Reported** by xbox-emulator: an RTX 3080 returns 0x7FFF for an f16 FMA whose
@@ -823,7 +848,9 @@ translation depends on it.
     toward zero, not to nearest even. So the choice between the typed path and the fallback
     goes by measured result, not by the reported support.
 * **`frac`.** **Reported:** `v_fract_f32` clamps its result below 1.0, and D3D's `frac` doesn't.
-  Adapters differ on the unclamped value, so a translation adds the clamp itself.
+  Adapters differ on the unclamped value, so a translation adds the clamp itself. xcl reports
+  that ±inf and NaN give NaN, so the clamp has to be a compare and select: HLSL's `min` returns
+  the other operand for a NaN, which would turn NaN into the bound.
 * **Atomics on UAV arrays.** **Reported:** with a non-uniform index, they give four times the
   expected result on RDNA 3 and RDNA 4 and on Windows 10's WARP. A `WaveReadLaneFirst` loop that
   handles one distinct index at a time gives the right result.

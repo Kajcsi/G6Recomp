@@ -29,7 +29,7 @@ functions to C++, one at a time, and checks each against the original. We run gu
 natively. So its translators don't carry over, but its measurements of the package and of
 desktop D3D12 do.
 
-**Last reviewed: commit `579d13f` (2026-11-23).** No code has been copied. If code is ever
+**Last reviewed: commit `8370c17` (2026-11-23).** No code has been copied. If code is ever
 copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES.md).
 
 ### Taken
@@ -78,8 +78,8 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | 2,011 pixel records write `FLAT_SCR_LO` and `FLAT_SCR_HI` as their second and third instructions and contain no scratch or flat instruction | Checked here for every stage: none of the 12,741 programs that write the pair has such an instruction, so a translation drops the writes | [shaders.md](shaders.md) |
 | Pixel shaders' descriptors traced over 4,411 records: how many each reads through `s_buffer_load`, how many entry registers each uses, and where the trace stops (1,553 at an entry SGPR nothing set, 582 at a 16-byte descriptor no load reads) | Reported | [shaders.md](shaders.md) |
 | Interpolation on an RTX 3070 lands one or two f32 ulps low in 133 of 276 values, enough to change 17 pixels after rounding to f16 toward zero; WARP is exact | Reported | [shaders.md](shaders.md) |
-| A comparison sampler's function is S# word 0 bits 14:12, in `D3D12_COMPARISON_FUNC` order minus one, and `TRUNC_COORD` is bit 27. A sampler used both for comparison and ordinary sampling needs two host samplers | Reported (RTX 3070, GTX 1060 and WARP) | [shaders.md](shaders.md) |
-| Host facts: Intel GPUs run 16-lane waves and WARP 4; the `MinLod` weight is quantized to 1/256; WARP 10.0.26100.9818 removes the device for a mesh pipeline without a pixel shader; an RX 570 on vkd3d-proton has shader model 6.6; a GTX 1060 has DXR 1.0 and Windows 10 19041's WARP none. DXC's GVN pass dominates compile time on sample-heavy shaders, and `-Od` cuts it by 84% or more | Reported | [shaders.md](shaders.md) |
+| A comparison sampler's function is S# word 0 bits 14:12, in `D3D12_COMPARISON_FUNC` order minus one, and `TRUNC_COORD` is bit 27. A sampler used both for comparison and ordinary sampling needs two host samplers | Reported (RTX 3070, GTX 1060 and WARP). The split also runs at shader model 6.0, on the GTX 1060 and on in-box and app-local WARP | [shaders.md](shaders.md) |
+| Host facts: Intel GPUs run 16-lane waves; WARP's width depends on its build, 4 lanes for Windows 10's in-box WARP and 8 for app-local WARP 1.0.22 (Agility SDK 1.620.2), so a test can't assume one WARP width; the `MinLod` weight is quantized to 1/256; WARP 10.0.26100.9818 removes the device for a mesh pipeline without a pixel shader; an RX 570 on vkd3d-proton has shader model 6.6; a GTX 1060 has DXR 1.0, and `DispatchRays` fixtures pass on it, and Windows 10 19041's WARP has none. DXC's GVN pass dominates compile time on sample-heavy shaders, and `-Od` cuts it by 84% or more | Reported | [shaders.md](shaders.md) |
 | Windows refuses an image for raw data only when a section's raw data ends at or past 4 GiB or the last section's runs past the end of the file; other sections may lie past it and read as zero; a section with `SizeOfRawData` 0 isn't checked | Checked here on Windows 11 26200 with an original fixture, which also showed one rule they don't list (the last section at an unaligned offset fails). Our PE reader rejected a middle section past the end of the file and accepted a cut-off last one; it now follows Windows (`test_pe`) | [execution-model.md](execution-model.md), `common/src/pe/image.cpp` |
 | A DLL with no import directory gets no TLS index, and an import table holding only its null entry is enough. A TLS template ending past the image fails with error 998, and one ending before it starts with 193 | Reported (Windows 10 19045). Our donors import a function, as the design requires | [execution-model.md](execution-model.md) |
 | Their `D3D12XboxCreateDevice` shim refuses a parameter block and any interface but `ID3D12Device` | Reported as their assumption; Leonida reports a 24-word block | [d3d12x.md](d3d12x.md) |
@@ -89,10 +89,16 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | NVIDIA drivers reject some shaders compiled with `-denorm preserve`: pipeline creation returns `E_OUTOFMEMORY` on an RTX 5080 (32.0.16.2101) and an RTX 5060 Ti (32.0.16.2124), where WARP accepts them | Reported. Matters when `shaderrecomp` picks a denormal mode | Later: `shaderrecomp` (M3) |
 | DXIL has no binary16 denormal setting: DXC's `-denorm` sets only the 32-bit mode. Computing packed f16 in f32 and narrowing in integers gives the same results under either mode | Reported. The console's f16 denormal mode is still unmeasured | Later: `shaderrecomp` (M3) |
 | An unguarded HLSL cast of NaN to an integer gives 0x80000000 on WARP and an RTX 3080; replacing NaN and clamping first passes on both | Reported. Narrows the DXC rows above | Later: `shaderrecomp` (M3) |
-| SPIRV-Cross (at `57e4efc`) won't convert SPIR-V that uses physical addresses to HLSL, and that is the form Leonida's translator emits. Upstream rewrites such accesses as bounded storage-buffer accesses, sending bad addresses to offset 0xFFFFFFFC so that D3D12's bounds checks turn them into zero reads and dropped writes | Reported. Rules out reaching DXIL from Leonida's SPIR-V through SPIRV-Cross as it stands | Later: `shaderrecomp` (M3) |
+| SPIRV-Cross (at `57e4efc`) won't convert SPIR-V that uses physical addresses to HLSL, and that is the form Leonida's translator emits. Upstream rewrites such accesses as bounded storage-buffer accesses, sending bad addresses to offset 0xFFFFFFFC so that D3D12's bounds checks turn them into zero reads and dropped writes. The bounded window also runs at shader model 6.0 with `Int64ShaderOps`, on a GTX 1060 and on in-box and app-local WARP | Reported. Rules out reaching DXIL from Leonida's SPIR-V through SPIRV-Cross as it stands | Later: `shaderrecomp` (M3) |
 | `v_madak_f32` and `v_madmk_f32` aren't fused: like `v_mad_f32`, they round the product to binary32 before the add and flush binary32 denormals. A draw tells the two apart on an RTX 3080 and on WARP | Reported. Whether the console flushes in these forms isn't measured | Later: `shaderrecomp` (M3) |
 | Integer semantics checked by draws: the 24-bit multiplies use bits 23:0 (sign-extended in the `i24` forms), and their `hi` forms return bits 47:32 of the product; `v_subrev_nc_u32` subtracts the first source from the second and wraps; `s_lshl1_add_u32` to `s_lshl4_add_u32` set SCC on a carry out of bit 31, bits shifted out included; `s_bfm_b32` masks its count and offset to five bits and leaves SCC alone | Reported. Each agrees with AMD's RDNA 2 reference | Later: `shaderrecomp` (M3) |
 | When an executable's entry point returns, Windows 11 doesn't end the process: a loader thread-pool worker can keep it alive for about 30 s, and the exit code then becomes 0. A startup wrapper that passes the entry's result to `ExitProcess` fixes it | Reported; upstream calls the cause a hypothesis. For phase 5: when the main executable's entry returns, our host has to end the process with that result itself | Later: `runtime/loader` (M1) |
+| Without mesh shaders, compute dispatches can write each triangle into its own range of one buffer, and after one UAV-to-SRV transition vertex draws read the ranges in order into shared colour and depth targets. Depth order holds: a GTX 1060 and Windows 10's in-box WARP matched all 1,024 colour and 1,024 depth pixels with the order reversed and the depths swapped, and the stale-target controls caught their errors | Reported. A fallback for hosts without mesh shaders, for the 9,282 mesh programs | [shaders.md](shaders.md); later `runtime/gpu` (M3) |
+| Refitting a DXR acceleration structure needs `ALLOW_UPDATE` on the build as well as `PERFORM_UPDATE` on the update: without it a GTX 1060 (32.0.15.6094) removed the device. With both, an in-place update matched a fresh full build there and on app-local WARP 1.0.22 | Reported | [shaders.md](shaders.md); later `runtime/gpu` (M3), the DXR stand-in for the BVH builder |
+| DXR tier 1.0 runs `DispatchRays` (`lib_6_3`) but not inline `RayQuery`, which needs tier 1.1 and shader model 6.5. Tier 1.0 has no geometry index, so it goes in each geometry's hit-group record as a local root constant. Facing is decided in object space, so a mirrored instance doesn't flip it | Reported (GTX 1060). Translating the 64 ray-traced compute shaders to inline `RayQuery` would leave tier 1.0 hosts out | [shaders.md](shaders.md) |
+| On an RX 9070 XT (driver 32.0.32015.7029), `CommittedRayT()` came back as the true distance plus TMin for 43 of 126 rays | Reported (an earlier upstream pull request, missed by the review before) | Later: `runtime/gpu` (M3) |
+| Translation rules drawn bit-exact on an RTX 3060 or 4060 and WARP, from AMD's reference, LLVM, or Mesa: `v_bfe_u32`, `v_bfe_i32` and `v_bfm_b32` take the low five bits of offset and width, so a width of 32 is 0; `v_ffbh`/`v_ffbl` keep the all-ones result for no bit found; `v_cvt_pk_u16_u32` and `v_cvt_pk_i16_i32` put src0 in the low half and saturate (the saturation from Mesa, the ISA leaving it open); `v_sad_hi_u8`, `v_sad_u32` and `v_msad_u8` are unsigned and wrap at 2^32, and `v_msad_u8` skips byte lanes whose src1 byte is zero; `v_add_co_u32` and the subtracting forms take their carry rules from LLVM; `image_sample` with a partial `dmask` packs the enabled channels into consecutive VGPRs in RGBA order; `v_readfirstlane_b32` becomes `WaveReadLaneFirst` only for a source proven uniform | Reported, none measured on the console. Checked against our name tables: the packing conversions, the SADs, `v_bfe` and `v_add_co_u32` are VOP3-only opcodes there, as upstream says gfx10 has them | Later: `shaderrecomp` (M3) |
+| Windows 10's in-box WARP (10.0.19041.5794) picks mip 1 for a per-sample `MinLod` clamp of 1.5625 under point mip filtering, where `SampleLevel` at the same LOD picks mip 2; linear mip filtering blends as expected | Reported, on that one adapter: a host difference, not a claim about the console | [shaders.md](shaders.md) |
 
 ### Not taken
 
@@ -123,11 +129,12 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 * **The BCPack rANS decoder** (Python, vendored from bcpack-rs). Before taking it, find where
   its "MIT-licensed model tables" come from: tables derived from the console's software stay
   out (hard rule 2).
-* **The TTPF batch DDS exporter.** An asset exporter, so it stays out whatever its licence.
+* **The TTPF batch DDS exporter,** and the Rust BCPack kernels added for it. An asset exporter,
+  so it stays out whatever its licence.
 
 ### Next review
 
-1. Run `git log 579d13f..origin/main` in a scratch clone outside the repo.
+1. Run `git log 8370c17..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/experiments.md` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -227,7 +234,7 @@ copy, and port code only where it fits our design.
 | 99.86% of 770,412 descriptor loads take their base from a wave-start SGPR used as a 32-bit pointer; resource and sampler heaps have separate bases; T# offsets are multiples of 32 and S# offsets of 16 | Reported. Consistent with our register model | [shaders.md](shaders.md) |
 | Opcodes that exist only on gfx1013, against gfx103x (`v_mad`/`v_mac` and `_legacy`, `v_mul_lo_i32` as VOP3 0x16B, scalar stores, atomics and scratch, `s_dcache_wb`, the `ds_*_src2` forms), and VOP2 0x06 and VOP3 0x106 and 0x140 decoding differently on gfx103x | Reported (llvm-mc sweep). Our names agree with xbox-emulator's gfx1013 table (below) | [shaders.md](shaders.md) |
 | `v_mad_f32`, `v_mac_f32` and `v_mad_legacy_f32` flush denormals whatever MODE says, before and after the output modifier, on gfx1010; 9,297 shaders use them | Reported | [shaders.md](shaders.md) |
-| Buffer bounds follow Mesa's GFX11 column per `OOB_SELECT`, soffset included in raw mode (gfx1036 and gfx1011); the point mip filter rounds floor(λ+0.5) after `MIN_LOD` clamps; helper lanes: EXEC holds covered pixels, quad lane order (x&1)+2(y&1), helpers hold their own I/J; `v_cvt_pknorm_*` rounds once; d16 integer loads saturate; `image_get_resinfo` gives 2D depth 0 | Reported | [shaders.md](shaders.md) |
+| Buffer bounds follow Mesa's GFX11 column per `OOB_SELECT`, soffset included in raw mode (gfx1036 and gfx1011); the point mip filter rounds floor(λ+0.5) after `MIN_LOD` clamps (Xbox2Windows measured Windows 10's in-box WARP not doing so for a per-sample clamp, so that WARP is no reference there); helper lanes: EXEC holds covered pixels, quad lane order (x&1)+2(y&1), helpers hold their own I/J; `v_cvt_pknorm_*` rounds once; d16 integer loads saturate; `image_get_resinfo` gives 2D depth 0 | Reported | [shaders.md](shaders.md) |
 | XCurl can load the PC's `gameplatformservices.dll` from System32, after reading a `GamingServices` registry value, and reach the Game Runtime through it | Checked here: `XCurl.dll` holds the names. The DLL is in the loader's networking deny list | [side-dlls.md](side-dlls.md), `runtime/loader` |
 | Wine 9 has no `CopyFile2` and binds an import of it to a stub that ends the process | Reported. Our HLE looks it up at run time and falls back to `CopyFileExW` | [hle-status.md](hle-status.md) |
 | `VirtualAlloc` with the console's `MEM_GRAPHICS` (0x10000000) or `MEM_TITLE` (0x40000000) fails on desktop with `ERROR_INVALID_PARAMETER` | Checked here on Windows 11 26200. The bit values are reported | [hle-status.md](hle-status.md) |
@@ -315,7 +322,7 @@ remaining candidates, both for M3, are the HLSL side of that translator and part
 layer (`crates/compat/d3d12_xs`) for `runtime/gpu`. The method map and other tables it measured
 on console OS binaries stay out (see "Not taken").
 
-**Last reviewed: commit `6e81ffc` (2026-11-23).** Upstream rewrote its history on 2026-11-22:
+**Last reviewed: commit `de1e1da` (2026-11-23).** Upstream rewrote its history on 2026-11-22:
 `51f5319` is `ceb2b87` on the new `main`, the two trees differing in one redaction line of a
 publishing script.
 
@@ -376,6 +383,11 @@ publishing script.
 | The console compiler merges root loads into 8- and 16-dword loads that run past the last parameter. Its root-signature inference starts geometry user SGPRs at s22 | Reported. **Conflicts:** Leonida and our register model put them from s8 | [shaders.md](shaders.md) |
 | Write-watch: views of physical pages or file mappings can't carry it, and on its Windows build the first read of a page never touched marks it dirty. fp16 and `R11G11B10_FLOAT` blending saturates a finite overflow | Reported, on WARP and its GPU | [d3d12x.md](d3d12x.md), [shaders.md](shaders.md) |
 | `XGameSave` calls on a closed handle return `E_GS_HANDLE_EXPIRED` (0x8083000D); it doesn't serve slots 30 to 32 (`XGameSaveFiles*`) | Reported | [hle-status.md](hle-status.md) |
+| `XAsync` rules from conformance tests derived from libHttpClient's and also run against the PC Game Runtime: `XAsyncBegin` with no queue and no process queue fails with `E_NO_TASK_QUEUE` (0x800701AB), and on a terminating queue with `E_ABORT`; when the provider's begin step fails, `XAsyncBegin` still returns `S_OK` and completes the call with that failure, and `E_PENDING` from it keeps the call pending; a second `XAsyncSchedule` before the worker has run, and a work step that returns success without completing, give `E_UNEXPECTED`; `XAsyncRun`'s work callback result becomes the call's; `XAsyncGetResult` with a null buffer gives `E_INVALIDARG`, checked before the size, and too small a size `E_NOT_SUFFICIENT_BUFFER` (0x8007007A); `XAsyncGetResultSize` on a pending or failed call returns that status and writes 0 | Reported. Agrees with xcl's rows on the same contracts | Later: `runtime/gdk` |
+| The d16 buffer loads write half a VGPR and keep the other: `buffer_load_ubyte_d16`, `_sbyte_d16` and `_short_d16` (MUBUF 0x20, 0x22, 0x24) the low half, their `_hi` forms (0x21, 0x23, 0x25) the high half. `buffer_store_byte_d16_hi` and `buffer_store_short_d16_hi` (0x19, 0x1B) store from the high half | Reported; the opcode numbers are AMD's RDNA 2 reference. Our MUBUF table has no names for them yet; no 1.0.2.1 program uses them, since every reachable instruction decodes | `tools/shaderrecomp/src/rdna2*` |
+| A freed `XMem` range can be handed out again under a resource that still covers it, so a cache of committed pages has to be cleared on every free path | Reported | Later: `runtime/imports/xmem` and `memory_tracker` (M3) |
+| A save container or blob name too long for the host file system is stored under a hashed file name, with the real name in a file beside it | Reported | Later: `runtime/gdk` (`XGameSave`) |
+| `CopyFileExW`, `MoveFileWithProgressW` and `ReplaceFileW`, its backup path included, need the same path redirection as `CreateFileW` | Taken: every move, copy and replace function is HLE on the mounts since `2d4307b` | [hle-status.md](hle-status.md), [io.md](io.md) |
 
 The word-scan and structural checks in these tables come from our own scratch scripts. They
 match AMD's public instruction encodings against the unpacked programs, and their output stays
@@ -423,6 +435,8 @@ local.
   libHttpClient's own MIT tests instead; the transcendental models, taking AMD's rocjitsu
   headers (MIT) directly for `log`, `exp`, `sin` and `cos`; and its hardware-recorded test
   vectors for VALU and image atomics.
+* **Fortnite and Trackmania fixes** (`6e81ffc..de1e1da`). Title-specific, with nothing GTA VI
+  or the console's shared behaviour needs.
 
 ### TomBox
 
@@ -436,7 +450,7 @@ same check first.
 
 ### Next review
 
-1. Run `git log 6e81ffc..origin/main` in a scratch clone outside the repo.
+1. Run `git log de1e1da..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `README.md`, `docs/BLOCKERS.md`, and `docs/DEVELOPMENT_LOG.md`. Look for
    GTA VI, and for console behaviour that every title shares.
 3. Add each new finding to the table above with its status here, check it when a design
@@ -520,7 +534,7 @@ understanding of the behaviour. We never translate its code. The permissive thir
 material it carries (AMD's ISA and addrlib tables, LLVM's test vectors) we take from upstream
 when we need it.
 
-**Last reviewed: commit `dd713e3` (2026-11-22).** No code has been copied.
+**Last reviewed: commit `b4edefb` (2026-11-23).** No code has been copied.
 
 ### Taken
 
@@ -548,6 +562,13 @@ when we need it.
 | A wave64 program split into two 32-lane halves breaks on `v_mbcnt` over a mask that isn't a constant, a VOP3 `v_cmp` into an SGPR pair, and 32-bit `s_bcnt`, `s_ff1` or `s_flbit` on one word of a mask | Reported, measured on an RTX 3080 | [shaders.md](shaders.md) |
 | A Ryzen 7000 integrated GPU (RDNA 2) runs wave64 but has no mesh shader tier, so stages translated to mesh shaders can't run there | Reported | [shaders.md](shaders.md) |
 | Vertex inputs the shader doesn't read take no fetch VGPRs | xcl now agrees with what we checked under xbox-emulator's row | [shaders.md](shaders.md) |
+| Which kernel32 entries reach which: measured on Windows 11, `MoveFileW` goes only through `MoveFileWithProgressW`; kernel32's `MoveFileA`, `MoveFileExA` and `MoveFileWithProgressA` reach no kernelbase move function; `CopyFileW` and the ANSI copies go through `CopyFileExW`, and `ReplaceFileA` through `ReplaceFileW`. `ReplaceFileW` is the usual last step of a save | Taken as the reason to bind each name itself: since `2d4307b` every move, copy and replace function is HLE, so it doesn't matter which entry the host would route through | [hle-status.md](hle-status.md), [io.md](io.md) |
+| `XAsync` and `XTaskQueue` contracts, as libHttpClient has them: `XAsyncCancel` only asks the provider, and a provider that can't cancel runs to its end (completing with `E_ABORT` there freed the payload under a running work step); a failing begin step fails the call through its block while `XAsyncBegin` and `XAsyncRun` return `S_OK`; `XAsyncComplete` with `E_PENDING` completes nothing; `XTaskQueueTerminate` runs the delayed callbacks still waiting, as canceled, before its own callback; a terminated queue refuses submits, delayed submits, waiters and `XAsyncSchedule` with `E_ABORT` | Reported, tested under Wine. Agrees with xbox-emulator's `XAsync` row | Later: `runtime/gdk` |
+| Save names that Windows would change get escaped, not refused: `.`, `..`, device names with any extension (`nul .txt` too), and names ending in a dot or a space. Deleting a container named `..` once deleted every save | Reported | Later: `runtime/gdk` (`XGameSave`) |
+| Desktop drivers don't keep a 2-D or 3-D compute group's threads in order within a wave: an RX 9070 lays them out in 2x2 quads (in an 8x8 group, lanes 0, 1, 4, 5 hold `SV_GroupIndex` 0 to 3), and NVIDIA's waves of an 8x8x4 group don't hold consecutive indices either; 1-D groups stay in order. The console's do. So a translated 2-D or 3-D compute program that uses DPP, readlane, `ds_bpermute` or `v_mbcnt` reads the wrong lanes unless each host wave takes the next block of console threads itself when it starts | Reported (RX 9070, RTX 5070 Ti) | [shaders.md](shaders.md) |
+| Splitting a wave64 program into two 32-lane host waves that exchange through groupshared: NVIDIA (range 32 to 32) refuses a `[WaveSize(64)]` compute pipeline. Only masks, `readlane`/`readfirstlane`, `ds_bpermute` and GLC scalar loads need the exchange; DPP, swizzles and `permlane` stay in a half. It cost 1.3 times with one console wave per group and about 5 times with four. Wave64 vertex and pixel programs that read lanes 32 to 63 stay open on NVIDIA, where those lanes don't exist. The exchange waits on its partner, which assumes co-resident waves make progress; WARP doesn't promise that, and has neither 32 nor 64 lanes, so it can't test this form | Reported (RTX 5070 Ti, RX 9070). Supersedes the row above on splitting into halves | [shaders.md](shaders.md) |
+| An AMD driver gave a later `a < b` the unordered result of an earlier `!(a >= b)` on the same operands, so float compares test NaN explicitly; f64 `floor`, `ceil`, `trunc`, `fract`, `ldexp`, `sqrt`, `rsq` and conversions need their own handling past the f32 and int64 ranges | Reported | Later: `shaderrecomp` (M3) |
+| `v_fract_f32` of ±inf or NaN is NaN | Reported. So the clamp below 1.0 in Xbox2Windows's row must be a compare and select: HLSL's `min` returns the other operand for a NaN, which would turn NaN into the bound | [shaders.md](shaders.md) |
 
 **For `runtime/gpu` (M3).** Reported, and to be checked against GTA VI's own calls before a
 design depends on them:
@@ -556,7 +577,7 @@ design depends on them:
 |---|---|---|
 | Console command lists: the title's inline code compares the list's write pointer (+0x18) with its end (+0x30), and calls the matching method when the record doesn't fit. So a list object whose buffer never has room turns every inline write into a method call | Checked here on `XboxBvhBuilder.dll`: 205 sites in 30 functions, each falling back to one method. Dispatch records compare with a second end at +0x28. The list object must still be at least 0x564 bytes of writable memory, since one field is written before the check. This removes the Leonida row's risk for the builder; the main executable still needs checking | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
 | Memory-based root arguments: s[0:1] points to a packed table in which a root constant takes 4 bytes, a root descriptor 8, and a descriptor table 4 (a 32-bit address). Compute root arguments fill user SGPRs s4 to s15 until one doesn't fit; it and all after it go to the table | Reported. The compute rule shows in the BVH builder's and FSR 4's code, which we have. Its graphics rule isn't taken (see "Not taken") | Later: `runtime/gpu` (M3) |
-| Console descriptors: a view slot is 32 bytes and a sampler slot 16, and descriptor table addresses have a zero high half. Titles copy descriptors as plain memory, so all console view heaps have to live in one shader-visible desktop heap | Reported. Fits Leonida's 32-bit descriptor pointers and Xbox2Windows's 32-byte entries ([shaders.md](shaders.md)) | Later: `runtime/gpu` (M3) |
+| Console descriptors: a view slot is 32 bytes and a sampler slot 16, and descriptor table addresses have a zero high half. Titles copy descriptors as plain memory, so all console view heaps have to live in one shader-visible desktop heap. NVIDIA's holds 1,000,000 descriptors, which Minecraft's eight heaps of 73,727 slots overran, so xcl now takes that heap 256 slots at a time, as each page is first used | Reported. Fits Leonida's 32-bit descriptor pointers and Xbox2Windows's 32-byte entries ([shaders.md](shaders.md)) | Later: `runtime/gpu` (M3) |
 | Method slots: device extensions start at slot 44 and command-list extensions at 60, and list slots 28 to 55 are shifted from desktop. `PresentX` is queue slot 30, `SignalX` queue slot 23, and the frame clock device slots 78 to 81 | Reported, mostly observed on Fortnite, an older GDK. **Conflicts:** xcl keeps `ExecuteIndirect` at slot 59 where Leonida says 61, and xcl's own notes give list slot 85 two meanings. **Partly checked** on the BVH builder: desktop compute root slots 29 to 41 sit four higher, while `Dispatch` (14), `SetPipelineState` (25) and `ResourceBarrier` (26) don't move. The builder never calls `ExecuteIndirect`, but the upscaler settles it at 61, against xcl's 59. Queue slots 23 and 30 belong to the older runtime layout (next row) | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
 | A newer console runtime reports the same SDK version, 0x20004, but moves slots: two more queue methods before `Signal`, so `SignalX` is 25 and `PresentX` 32, and the list's console methods from `CopyTextureRegionX` on sit two slots later. The device is unchanged | Reported, seen on Unicorn Overlord. Which layout GTA VI uses shows in the executable's queue calls | [d3d12x.md](d3d12x.md) |
 | Unified memory on XDefiant: a first graphics reservation of 8 GiB + 4 MiB; a write-watch scan of about 2 GB costs about 0.8 ms per submission; only the 64-byte chunks the CPU changed may be uploaded; sync at `ExecuteCommandLists`, since titles fill vertex rings after recording; address 0 and the 32-bit descriptor range stay out of title reservations | Reported, measured | [d3d12x.md](d3d12x.md); later `memory_tracker` (M3) |
@@ -575,6 +596,8 @@ design depends on them:
 | `VirtualFree` has to tell the sparse-tile tracking before it decommits, and uncommitted pages inside a mapped tile are holes: never read, their video memory zeroed | Reported, seen on XDefiant | Later: `memory_tracker` and `runtime/kernel` (M3) |
 | An empty sampler slot holds the console's zero sampler: point filtering, wrap, mip 0 | Reported | Later: `runtime/gpu` (M3) |
 | The driver links pixel inputs by register, so a pixel shader that declares only the inputs it reads is refused; every input has to be declared | Reported | Later: `shaderrecomp` (M3) |
+| Translated shaders reach title memory through window buffers rather than the resources a barrier names, so each batch with a UAV barrier or a transition to `UNORDERED_ACCESS` gets one UAV barrier for all resources | Reported | Later: `runtime/gpu` (M3) |
+| `PresentX` has to queue the present copy before it reports the flip, and keep the copy's source until the copy's fence; aliasing barriers must keep placed textures; resetting write-watch when a range is registered drops other users' pending CPU writes | Reported, seen on Unicorn Overlord and XDefiant | Later: `runtime/gpu` and `memory_tracker` (M3) |
 
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".
@@ -595,7 +618,8 @@ setting is simpler.
   5 keeps all of that out.
 * **Facts measured on console SDK or OS binaries.** Its tests run the console's own shader
   compiler, which is where its graphics root-argument rule comes from. They compare against the
-  console's texture-layout library (pipe configuration, metadata planes). Its notes include
+  console's texture-layout library (pipe configuration, metadata planes), and its MSAA layouts
+  are now checked against that library too. Its notes include
   system-partition research. Console SDK material stays out of the repo.
 * **Its asset tools:** `rpf.rs --extract` and its shader dumps. Its texture-pool viewer is
   gone upstream since `7396683`.
@@ -607,7 +631,7 @@ setting is simpler.
 
 ### Next review
 
-1. Run `git log dd713e3..origin/main` in a scratch clone outside the repo.
+1. Run `git log b4edefb..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `HANDOFF.md` and `docs/specs/` for facts, written up in our own words.
 3. Add each new finding to the tables above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
