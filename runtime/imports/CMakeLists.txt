@@ -5,6 +5,7 @@ add_library(g6imports STATIC
     command_line.cpp
     policy.cpp
     combase/class_activation.cpp
+    d3d12_xs/virtual_memory.cpp
     kernelbase/files.cpp
     kernelbase/registry.cpp
     ucrtbase/exit.cpp

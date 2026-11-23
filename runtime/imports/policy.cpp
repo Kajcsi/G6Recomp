@@ -20,6 +20,7 @@
 #include "g6/imports/command_line.h"
 #include "g6/imports/crt_exit.h"
 #include "g6/imports/crt_paths.h"
+#include "g6/imports/d3d12_xs.h"
 #include "g6/imports/files.h"
 #include "g6/imports/registry.h"
 #include "g6/imports/xmem.h"
@@ -328,8 +329,9 @@ void add_console(ImportRegistry& imports) {
     xmem::register_xmem(imports);
     add_game_runtime(imports);
 
-    // D3D12.X, until runtime/gpu wraps it.
+    // D3D12.X, until runtime/gpu wraps it, but for what the executable calls before the device.
     imports.stub_dll("d3d12_xs.dll", StubResult::hresult());
+    d3d12_xs::register_d3d12_xs(imports);
 
     // Never mapped; our own code takes their place at M3 (docs/side-dlls.md, "Replaced DLLs").
     imports.replace_dll("amd_fidelityfx_upscaler_xbox.dll");

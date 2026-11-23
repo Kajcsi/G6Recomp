@@ -231,6 +231,14 @@ TEST_CASE("the xmem functions the executable calls first are HLE") {
     }
 }
 
+TEST_CASE("D3D12ConfigureVirtualMemoryX is HLE, before the device") {
+    ImportRegistry policy = default_game_policy();
+    const Resolution resolution =
+        policy.resolve("d3d12_xs.dll", Symbol::by_name("D3D12ConfigureVirtualMemoryX"));
+    CHECK(resolution.binding == Binding::Hle);
+    CHECK(resolution.address != nullptr);
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",
