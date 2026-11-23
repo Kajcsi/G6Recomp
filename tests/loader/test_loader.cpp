@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -667,6 +669,101 @@ TEST_CASE("each module gets a random security cookie before it runs") {
     CHECK_EQ(cookie >> 48, uint64_t{0});
     // The C runtime kept it.
     CHECK_EQ(guest_function<uint64_t (*)()>(guest, "g6_guest_security_cookie")(), cookie);
+}
+
+namespace {
+
+// A copy of loader_guest.dll in a folder of its own, with `edit` applied to the file's bytes at
+// the load configuration: the cookie slot's file offset and the GuardFlags offset are passed in.
+class PatchedGuest {
+public:
+    template <typename Edit>
+    PatchedGuest(std::string_view tag, Edit edit)
+        : folder_(std::filesystem::temp_directory_path() /
+                  fmt::format("g6_patched_{}_{}", GetCurrentProcessId(), tag)) {
+        std::filesystem::create_directories(folder_);
+        const std::filesystem::path source =
+            std::filesystem::path(G6_GUEST_DIR) / "loader_guest.dll";
+        const std::filesystem::path target = folder_ / "loader_guest.dll";
+        std::filesystem::copy_file(source, target,
+                                   std::filesystem::copy_options::overwrite_existing);
+        const g6::pe::Image image = g6::pe::Image::load_file(source);
+        const auto config = g6::pe::read_load_config(image);
+        REQUIRE(config.has_value());
+        const uint32_t config_rva = image.directory(g6::pe::Directory::LoadConfig).rva;
+        const auto cookie_rva = image.try_va_to_rva(config->security_cookie_va);
+        REQUIRE(cookie_rva.has_value());
+
+        std::vector<uint8_t> bytes = read_file(target);
+        edit(bytes, file_offset(image, *cookie_rva), file_offset(image, config_rva + 0x90));
+        write_file(target, bytes);
+    }
+    // remove_all with an error code throws only std::bad_alloc, which ends the test run anyway.
+    ~PatchedGuest() { // NOLINT(bugprone-exception-escape)
+        std::error_code ignored;
+        std::filesystem::remove_all(folder_, ignored);
+    }
+    PatchedGuest(const PatchedGuest&) = delete;
+    PatchedGuest& operator=(const PatchedGuest&) = delete;
+
+    LoaderOptions options() const {
+        LoaderOptions options = make_options();
+        options.search_paths.insert(options.search_paths.begin(), folder_);
+        return options;
+    }
+
+private:
+    static size_t file_offset(const g6::pe::Image& image, uint32_t rva) {
+        for (const g6::pe::Section& section : image.sections()) {
+            if (rva >= section.virtual_address &&
+                rva < section.virtual_address + section.raw_size) {
+                return section.raw_offset + (rva - section.virtual_address);
+            }
+        }
+        throw std::runtime_error("no file bytes behind that RVA");
+    }
+    static std::vector<uint8_t> read_file(const std::filesystem::path& path) {
+        std::vector<uint8_t> bytes(std::filesystem::file_size(path));
+        std::ifstream file(path, std::ios::binary);
+        file.read(reinterpret_cast<char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        REQUIRE(file.good());
+        return bytes;
+    }
+    static void write_file(const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        REQUIRE(file.good());
+    }
+
+    std::filesystem::path folder_;
+};
+
+} // namespace
+
+TEST_CASE("a cookie the image seeded already is kept") {
+    constexpr uint64_t kSeeded = 0x0000123456789ABCull;
+    const PatchedGuest patched("seeded", [&](std::vector<uint8_t>& bytes, size_t cookie, size_t) {
+        std::memcpy(bytes.data() + cookie, &kSeeded, sizeof(kSeeded));
+    });
+    Loader loader(patched.options());
+    const Module guest = loader.load("loader_guest.dll");
+    CHECK_EQ(guest_function<uint64_t (*)()>(guest, "g6_guest_cookie_at_tls_attach")(), kSeeded);
+}
+
+TEST_CASE("a module that says it doesn't use its cookie keeps the default") {
+    const PatchedGuest patched("unused", [](std::vector<uint8_t>& bytes, size_t, size_t flags) {
+        uint32_t guard_flags = 0;
+        std::memcpy(&guard_flags, bytes.data() + flags, sizeof(guard_flags));
+        guard_flags |= 0x800; // IMAGE_GUARD_SECURITY_COOKIE_UNUSED
+        std::memcpy(bytes.data() + flags, &guard_flags, sizeof(guard_flags));
+    });
+    Loader loader(patched.options());
+    const Module guest = loader.load("loader_guest.dll");
+    // Nobody seeded it before the C runtime starts, which then seeds it itself.
+    CHECK_EQ(guest_function<uint64_t (*)()>(guest, "g6_guest_cookie_at_tls_attach")(),
+             kDefaultSecurityCookie);
 }
 
 TEST_CASE("loads that can't succeed throw") {

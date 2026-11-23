@@ -25,6 +25,12 @@ constexpr size_t kTebPeb = 0x60;
 // The default cookie the linker writes, which the loader must replace (the PE format's
 // description of the load configuration's SecurityCookie).
 constexpr uint64_t kDefaultSecurityCookie = 0x00002B992DDFA232;
+// IMAGE_GUARD_SECURITY_COOKIE_UNUSED in the load configuration's GuardFlags: the module doesn't
+// use /GS, so the loader leaves its cookie alone.
+constexpr uint32_t kGuardSecurityCookieUnused = 0x800;
+// The smallest load configuration whose cookie Windows seeds, as Xbox2Windows measured it. The
+// cookie itself ends at 0x60, but Windows wants the 16 bytes after it too.
+constexpr uint32_t kCookieConfigSize = 0x70;
 
 // Pseudo handles: one 64 KiB step per DLL name in a reserved, inaccessible range, so they look
 // like module handles and are never valid memory.
@@ -555,14 +561,25 @@ void Loader::Impl::set_up(Module::State& module) {
     const uint64_t base = module.base();
     const pe::Image& image = module.image;
 
-    // Security cookie.
+    // Security cookie, seeded where the Windows loader seeds it (Xbox2Windows measured this on
+    // Windows 11): a load configuration of at least kCookieConfigSize bytes, by both its
+    // directory entry and its own Size field, without the flag that says the module doesn't use
+    // /GS, and a slot that still holds the linker's default. A slot seeded already keeps its
+    // value; one left at the default is the C runtime's to seed when it starts.
     if (const auto config = pe::read_load_config(image); config && config->security_cookie_va) {
         const auto rva = image.try_va_to_rva(config->security_cookie_va);
         if (!rva || !image.contains(*rva, sizeof(uint64_t))) {
             throw kernel::LoadError(
                 fmt::format("{} has its security cookie outside the image", module.name));
         }
-        write_at(base + *rva, random_cookie());
+        const bool large_enough =
+            config->size >= kCookieConfigSize &&
+            image.directory(pe::Directory::LoadConfig).size >= kCookieConfigSize;
+        const bool used = (config->guard_flags & kGuardSecurityCookieUnused) == 0;
+        if (large_enough && used &&
+            *reinterpret_cast<const uint64_t*>(base + *rva) == kDefaultSecurityCookie) {
+            write_at(base + *rva, random_cookie());
+        }
     }
 
     // Exception table.
