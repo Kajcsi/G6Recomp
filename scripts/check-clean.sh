@@ -60,6 +60,13 @@ check_signature() {
     52494646*) fail "$path" "RIFF media (audio/video)" ;;
     4f676753*) fail "$path" "Ogg media" ;;
     44584243*) fail "$path" "compiled shader container (DXBC/DXIL)" ;;
+    4653534d*) fail "$path" "console GPU program image (FSSM)" ;;
+    58424348*) fail "$path" "packed console GPU program (XBCH)" ;;
+    50530009*) fail "$path" "driver pipeline cache (PS\\0\\t)" ;;
+    5053494e*) fail "$path" "reflection schema (PSIN)" ;;
+    41574300*) fail "$path" "AWC sound bank" ;;
+    59534300*) fail "$path" "compiled script (YSC)" ;;
+    50414d48* | 4d484955* | 53505331* | 53474435*) fail "$path" "game data container" ;;
     72656766*) fail "$path" "registry hive" ;;
     esac
     xvd=$(bytes_hex "$path" 512 8)
