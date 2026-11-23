@@ -28,6 +28,10 @@ read-write:
 
 * Only mounted drives exist; any other drive gives `ERROR_PATH_NOT_FOUND`.
 * The guest's current directory starts at `G:\`, so relative paths open files in the install.
+* The guest sees its own modules at their console paths: `GetModuleFileName` and the program
+  name in its command line give `G:\<file>`, which its file functions open. The runner gives
+  the loader a function that maps a module's host file to its console path
+  (`FileSystem::console_path_of`), and refuses an executable outside the install.
 * The drive letters are an assumption until the pre-flight checks
   ([execution-model.md](execution-model.md)) confirm them: one check is which drive-letter
   paths the main executable's strings contain.

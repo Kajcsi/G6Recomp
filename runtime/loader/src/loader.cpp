@@ -216,7 +216,8 @@ void on_thread_notification(G6ThreadRecord* record, unsigned long reason, void* 
 
 Loader::Impl::Impl(LoaderOptions options)
     : search_paths(std::move(options.search_paths)), imports(std::move(options.imports)),
-      threads(ThreadSupport::get()), stubs(&describe_thunk, this) {
+      guest_path(std::move(options.guest_path)), threads(ThreadSupport::get()),
+      stubs(&describe_thunk, this) {
     Impl* expected = nullptr;
     if (!g_active.compare_exchange_strong(expected, this, std::memory_order_acq_rel)) {
         throw std::logic_error("only one Loader may exist at a time");

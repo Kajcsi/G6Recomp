@@ -92,7 +92,7 @@ provides without a guest module gets a pseudo handle (see "The loader" in
 | `FreeLibraryAndExitThread` | implemented | `ExitThread` for guest modules and pseudo handles. |
 | `FreeLibraryWhenCallbackReturns` | implemented | Does nothing for guest modules and pseudo handles; anything else goes to the host's pool. The console's `msvcp140` pins itself this way in its task scheduler's threadpool callbacks. Windows 11's pool ignores the failed unload of a handle it doesn't know, but nothing documents that, so a guest handle never reaches it. xcl hit this on Minecraft ([related-work.md](related-work.md)). |
 | `DisableThreadLibraryCalls` | implemented | Stops `DllMain` and TLS callback thread notifications for a guest module without static TLS. A module with static TLS keeps them, as on Windows, which accepts the call and ignores it. |
-| `GetModuleFileNameA`, `GetModuleFileNameW` | implemented | The path a guest module was mapped from, or the DLL name for a pseudo handle; null gives the guest executable. Truncates and sets `ERROR_INSUFFICIENT_BUFFER` like Windows. |
+| `GetModuleFileNameA`, `GetModuleFileNameW` | implemented | The path a guest module was mapped from, as the `guest_path` loader option gives it (the runner gives console paths, such as `G:\game.exe`), or the DLL name for a pseudo handle; null gives the guest executable. Truncates and sets `ERROR_INSUFFICIENT_BUFFER` like Windows. |
 | `RtlPcToFileHeader` | implemented | Guest modules first, then the host's answer. The C++ runtime's throw uses it to find the image base of its type information. |
 
 The crash report's own function, which `register_crash_report` binds for imports from

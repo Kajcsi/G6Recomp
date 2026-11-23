@@ -8,6 +8,9 @@
 #define G6_RUNNER_ARGUMENT_1 "one"
 #define G6_RUNNER_ARGUMENT_2 "two words"
 
+/* The guest's own path, as its GetModuleFileName and argv[0] give it. */
+#define G6_RUNNER_PROGRAM "G:\\runner_guest.exe"
+
 /* A file the test writes into the install, and the guest copies to T:. */
 #define G6_RUNNER_DATA_FILE "runner_data.txt"
 #define G6_RUNNER_DATA "data from the install"
@@ -23,4 +26,7 @@ enum {
     G6_RUNNER_BAD_DATA = 13,
     G6_RUNNER_WROTE_INSTALL = 14,
     G6_RUNNER_NO_TEMP = 15,
+    G6_RUNNER_BAD_MODULE_PATH = 16,
+    G6_RUNNER_BAD_PROGRAM = 17,
+    G6_RUNNER_NO_PROGRAM_FILE = 18,
 };

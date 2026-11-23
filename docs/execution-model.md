@@ -558,8 +558,11 @@ Phases 1, 2, and 4 don't need the main executable.
         and needs `--data-dir`.
      2. Mounts the drives ([io.md](io.md)): the install read-only at `G:`, and `<data>\temp` at
         `T:`, where `<data>` is `--data-dir` or `%LOCALAPPDATA%\G6Recomp\<build ID>`.
-     3. Sets the guest's command line: the executable's path as its program name, then the
-        arguments after `--`.
+     3. Sets the guest's command line: the executable's console path as its program name, then
+        the arguments after `--`. The guest sees each of its modules at its console path, so
+        `GetModuleFileName` gives `G:\<file>`, which the guest's file functions open: the
+        loader reports what the runner's `guest_path` function in `LoaderOptions` gives. An
+        executable outside the install has no console path, so the runner refuses it.
      4. Starts the guest's exit tables, loads the executable under `default_game_policy()` with
         the install as the search path, and runs its entry point.
 
@@ -570,17 +573,15 @@ Phases 1, 2, and 4 don't need the main executable.
      The runner links `g6exetls`, so the executable's static TLS gets index 0. It exits with 2
      for a command line it can't use and 1 when the guest can't be started, and logs why.
 
-     Open: the guest's `GetModuleFileName` reports the host path of each guest module, so the
-     program name is a host path too, and the guest's own file functions can't open it, since
-     only mounted drives exist. On the console it would be a `G:` path.
-
      Tested by `test_runner`: the argument parsing, the hash, and the build identification in
      process, and `g6recomp.exe` in a child process on an original executable in a folder that
-     stands in for an install. Its `main` gets its arguments, starts in `G:\`, reads a file there
-     by a relative path, can't write to `G:`, and writes to `T:`, which lands in the data
-     directory's temp folder. Its C++ runtime is linked in: the host's `vcruntime140.dll`
-     imports `kernel32.dll`, which the game's policy stubs (its `DllMain` fails on
-     `InitializeCriticalSectionEx`), while the console's imports API sets.
+     stands in for an install. Its `main` gets its arguments, finds its own path as
+     `G:\runner_guest.exe` in `argv[0]` and from `GetModuleFileName`, and opens itself by it. It
+     starts in `G:\`, reads a file there by a relative path, can't write to `G:`, and writes to
+     `T:`, which lands in the data directory's temp folder. `test_loader` checks the
+     `guest_path` option on its own. The fixture's C++ runtime is linked in: the host's
+     `vcruntime140.dll` imports `kernel32.dll`, which the game's policy stubs (its `DllMain`
+     fails on `InitializeCriticalSectionEx`), while the console's imports API sets.
 
 ## Milestones
 

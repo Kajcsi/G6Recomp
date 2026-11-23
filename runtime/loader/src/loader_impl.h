@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -116,7 +117,8 @@ struct Loader::Impl {
 
     std::vector<std::filesystem::path> search_paths;
     ImportRegistry imports;
-    std::map<std::string, ModulePatches, std::less<>> patches; // by normalize_dll_name
+    std::function<std::wstring(const std::filesystem::path&)> guest_path; // may be empty
+    std::map<std::string, ModulePatches, std::less<>> patches;            // by normalize_dll_name
     void* trap_handler = nullptr; // the vectored handler for trapped cpuid and xgetbv, once needed
     ThreadSupport& threads;
     StubHeap stubs;

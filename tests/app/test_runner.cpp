@@ -216,6 +216,13 @@ TEST_CASE("g6recomp refuses what it can't run, without starting the guest") {
     CHECK_EQ(run_g6recomp({}), uint32_t{2});
     CHECK_EQ(run_g6recomp({L"--game-dir", install.native(), L"--exe", L"runner_guest.exe"}),
              uint32_t{2});
+    // An executable outside the install, where the guest couldn't see it.
+    fs::create_directories(folder.path() / "elsewhere");
+    fs::copy_file(install / "runner_guest.exe", folder.path() / "elsewhere" / "runner_guest.exe");
+    CHECK_EQ(run_g6recomp({L"--game-dir", install.native(), L"--exe",
+                           (folder.path() / "elsewhere" / "runner_guest.exe").native(),
+                           L"--data-dir", (folder.path() / "data").native()}),
+             uint32_t{1});
     // An install with no known build's executable, and a file the loader can't map.
     CHECK_EQ(run_g6recomp({L"--game-dir", install.native()}), uint32_t{1});
     CHECK_EQ(run_g6recomp({L"--game-dir", install.native(), L"--exe", L"not_a_pe.exe",

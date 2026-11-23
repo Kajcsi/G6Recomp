@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -227,26 +228,37 @@ Identified identify_build(const RunOptions& options, std::span<const KnownBuild>
         data_dir = io::user_data_directory(io::widen(identified.build_id, CP_UTF8));
     }
     data_dir = fs::absolute(data_dir).lexically_normal();
-    io::mount_standard_drives(io::active_file_system(), options.game_dir, data_dir);
+    io::FileSystem& file_system = io::active_file_system();
+    io::mount_standard_drives(file_system, options.game_dir, data_dir);
     LOG_INFO(runner, "G: is {} (read-only); the data directory is {}", utf8(options.game_dir),
              utf8(data_dir));
 
-    // The guest's program name is the executable's path as its GetModuleFileName reports it.
-    const std::wstring& program = identified.exe.native();
-    imports::set_guest_command_line(program,
-                                    imports::join_command_line(program, options.arguments));
+    // The guest sees its modules at their console paths, as its program name among them, so it
+    // can open its own files by them. The executable has one only inside the install.
+    const std::optional<std::wstring> program =
+        file_system.console_path_of(identified.exe.native());
+    if (!program || !program->starts_with(L"G:")) {
+        throw std::runtime_error(
+            fmt::format("{} isn't in the install, {}: the guest sees only the install's files",
+                        utf8(identified.exe), utf8(options.game_dir)));
+    }
+    imports::set_guest_command_line(*program,
+                                    imports::join_command_line(*program, options.arguments));
     // The guest's exit ends the host process with its code (the default end).
     imports::ucrtbase::start_guest_process();
 
     loader::LoaderOptions loader_options;
     loader_options.search_paths.push_back(options.game_dir);
     loader_options.imports = imports::default_game_policy();
+    loader_options.guest_path = [](const fs::path& file) {
+        return io::active_file_system().console_path_of(file.native()).value_or(file.native());
+    };
     // Never destroyed: the process ends while the guest's modules are still mapped, as Windows
     // ends a process without unmapping its images, and other guest threads may still run.
     auto* loader = new loader::Loader(std::move(loader_options));
     const loader::Module executable = loader->load(identified.exe);
 
-    LOG_INFO(runner, "running {}", utf8(program));
+    LOG_INFO(runner, "running {} as {}", utf8(identified.exe), io::utf8(*program));
     const uint32_t code = loader->run_entry_point(executable);
     // Windows ends the process when its main thread returns from the entry point.
     LOG_INFO(runner, "the guest's entry point returned {}", code);

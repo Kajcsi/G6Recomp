@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -77,6 +78,10 @@ struct LoaderOptions {
     // in an import. Each module's patches are applied while it loads, before any of its code
     // runs; a patch that breaks a rule in docs/hooks.md fails the load.
     std::map<std::string, ModulePatches> patches;
+    // The path the guest's GetModuleFileName reports for a guest module mapped from `file`.
+    // Unset, it reports `file` itself. The runner gives console paths (docs/io.md), so the guest
+    // can open its own files by those paths. Called on guest threads, so it must be thread-safe.
+    std::function<std::wstring(const std::filesystem::path& file)> guest_path;
 };
 
 class Loader {

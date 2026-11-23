@@ -75,16 +75,21 @@ DWORD copy_truncated(std::basic_string_view<Char> text, Char* buffer, DWORD size
     return size;
 }
 
+// The path the guest sees for a guest module's file.
+std::wstring guest_file_path(const Loader::Impl& impl, const Module::State& module) {
+    return impl.guest_path ? impl.guest_path(module.path) : module.path.wstring();
+}
+
 // The path GetModuleFileName reports for a guest module or a pseudo handle, if it is one.
 std::optional<std::wstring> known_module_path(const Loader::Impl& impl, HMODULE module) {
     if (module == nullptr) {
         if (const Module::State* executable = impl.executable()) {
-            return executable->path.wstring();
+            return guest_file_path(impl, *executable);
         }
         return std::nullopt;
     }
     if (const Module::State* guest = guest_module(impl, module)) {
-        return guest->path.wstring();
+        return guest_file_path(impl, *guest);
     }
     if (const auto name = impl.pseudo_name(module)) {
         return widen(*name);

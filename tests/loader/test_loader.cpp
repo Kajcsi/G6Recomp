@@ -513,6 +513,28 @@ TEST_CASE("the HLE loader functions see guest modules and the policy") {
     CHECK_EQ(std::filesystem::path(std::wstring(buffer, length)), guest.path());
 }
 
+TEST_CASE("the guest's GetModuleFileName reports the path the options give") {
+    // As the runner gives console paths for the guest's files (docs/io.md).
+    LoaderOptions options = make_options();
+    options.guest_path = [](const std::filesystem::path& file) {
+        return L"G:\\modules\\" + file.filename().wstring();
+    };
+    Loader loader(std::move(options));
+    const Module guest = loader.load("loader_guest.dll");
+    using ModuleFileNameFn = unsigned long (*)(void*, wchar_t*, unsigned long);
+    const auto module_file_name =
+        guest_function<ModuleFileNameFn>(guest, "g6_guest_module_file_name");
+
+    wchar_t buffer[MAX_PATH] = {};
+    const unsigned long length =
+        module_file_name(reinterpret_cast<void*>(guest.base()), buffer, MAX_PATH);
+    CHECK(std::wstring(buffer, length) == L"G:\\modules\\loader_guest.dll");
+    // Truncated like any other path.
+    CHECK_EQ(module_file_name(reinterpret_cast<void*>(guest.base()), buffer, 4), 4UL);
+    CHECK(std::wstring(buffer, 3) == L"G:\\");
+    CHECK(buffer[3] == L'\0');
+}
+
 TEST_CASE("a threadpool callback can ask to unload its own guest module") {
     // Windows' pool would unload the handle through its own loader, which doesn't know guest
     // modules. Guest modules stay mapped until the Loader goes, so the request changes nothing.
