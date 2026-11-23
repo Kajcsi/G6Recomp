@@ -348,6 +348,17 @@ void add_console(ImportRegistry& imports) {
     imports.stub_dll("d3d12_xs.dll", StubResult::hresult());
     d3d12_xs::register_d3d12_xs(imports);
 
+    // The audio processor (AcpHal.dll, xapu.dll, chad.dll) and the texture-layout library
+    // (xg_xs.dll): HRESULT APIs, stubbed honestly until runtime/audio and runtime/gpu serve them
+    // (docs/hle-status.md). An unknown DLL's stubs would return zero, which reads as S_OK. The
+    // three that return something else get the Win32 stub: a null address, FALSE, no results.
+    for (const char* dll : {"acphal.dll", "xapu.dll", "chad.dll", "xg_xs.dll"}) {
+        imports.stub_dll(dll, StubResult::hresult());
+    }
+    imports.stub("acphal.dll", Symbol::by_name("ApuMapApuAddress"), StubResult::win32());
+    imports.stub("acphal.dll", Symbol::by_name("ApuIsVirtualAddressValid"), StubResult::win32());
+    imports.stub("xapu.dll", Symbol::by_name("XApuGetResultCount"), StubResult::win32());
+
     // Never mapped; our own code takes their place at M3 (docs/side-dlls.md, "Replaced DLLs").
     imports.replace_dll("amd_fidelityfx_upscaler_xbox.dll");
     imports.replace_dll("xboxbvhbuilder.dll");

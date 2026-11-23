@@ -271,6 +271,36 @@ TEST_CASE("DStorageGetFactory is ours, and the rest of xcrdapi an HRESULT stub")
     CHECK_EQ(resolution.stub.value, kNotImplemented);
 }
 
+TEST_CASE("the audio processor and texture-layout DLLs never stub a false success") {
+    ImportRegistry policy = default_game_policy();
+    const std::pair<const char*, const char*> hresults[] = {
+        {"AcpHal.dll", "AcpHalCreate"},        {"AcpHal.dll", "ApuAlloc"},
+        {"AcpHal.dll", "ApuCreateHeap"},       {"xapu.dll", "XApuConnect"},
+        {"xapu.dll", "XApuDequeueResult"},     {"chad.dll", "XDspConnectWithMaximumStreamLimit"},
+        {"chad.dll", "XDspSubmitCommand"},     {"xg_xs.dll", "XGCreateTextureComputer"},
+        {"xg_xs.dll", "XGSuggestSwizzleMode"},
+    };
+    for (const auto& [dll, name] : hresults) {
+        INFO(std::string(dll) + "!" + name);
+        const Resolution resolution = policy.resolve(dll, Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Stub);
+        CHECK_EQ(resolution.stub.value, kNotImplemented);
+    }
+    // These three return an address, a BOOL, and a count, so zero is the honest answer.
+    const std::pair<const char*, const char*> zeros[] = {
+        {"AcpHal.dll", "ApuMapApuAddress"},
+        {"AcpHal.dll", "ApuIsVirtualAddressValid"},
+        {"xapu.dll", "XApuGetResultCount"},
+    };
+    for (const auto& [dll, name] : zeros) {
+        INFO(std::string(dll) + "!" + name);
+        const Resolution resolution = policy.resolve(dll, Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Stub);
+        CHECK_EQ(resolution.stub.value, 0U);
+        CHECK(resolution.stub.last_error == std::optional<uint32_t>(ERROR_CALL_NOT_IMPLEMENTED));
+    }
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",
