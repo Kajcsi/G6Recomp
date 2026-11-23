@@ -110,8 +110,8 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 
 | Imports | Status | Notes |
 |---|---|---|
-| `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions and the exit functions are HLE (`runtime/imports/ucrtbase`); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
-| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
+| `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions and the exit functions are HLE (`runtime/imports/ucrtbase`), and so are the argument functions (`runtime/imports`, "the command line", below); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
+| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`), and so are `GetCommandLineA` and `GetCommandLineW` (below). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
 | `api-ms-win-core-libraryloader-*` | implemented | The loader's HLE (above). The resource functions are forwarded: a guest handle is a mapped image. |
 | `api-ms-win-core-file-*` (and the same names from `kernel32`, `kernelbase`) | partial | Functions that take a handle are forwarded. The common path functions are HLE on `runtime/io` (`runtime/imports/kernelbase`). The other path functions stay stubbed: `INVALID_HANDLE_VALUE` for `CreateFile3` and the other `FindFirst` families, `INVALID_FILE_SIZE` for `GetCompressedFileSize`, zero otherwise. |
 | `api-ms-win-core-registry-*` (and the same four names from `advapi32`) | partial | Reading the console-mode key is HLE (`runtime/imports/kernelbase`, below). Everything else returns `ERROR_CALL_NOT_IMPLEMENTED` as the status. Of the mapped side DLLs only `msvcp140_atomic_wait` imports it, for the leap-second key; the GDK thunk in `XCurl` and `libHttpClient.GDK` (never mapped) imports the four HLE functions. |
@@ -225,6 +225,23 @@ call the runner's end function, `ExitProcess` by default.
 | `exit`, `_cexit` | implemented | The thread_local callback for the calling thread, then the atexit table newest first; a handler registered meanwhile runs next. `exit` then ends the guest process; `_cexit` returns, and doesn't flush the streams, as the UCRT's doesn't. |
 | `quick_exit` | implemented | The at-quick-exit table, then the end. |
 | `_exit`, `_Exit`, `_c_exit` | implemented | No handlers; the first two end the guest process. |
+
+## runtime/imports (the command line)
+
+The guest's own program path and command line (`command_line.cpp`), which the runner sets
+before it loads anything. `GetCommandLineA` and `GetCommandLineW` come from
+`api-ms-win-core-processenvironment-*`, `kernel32`, and `kernelbase`; the CRT functions from
+`api-ms-win-crt-*`. The parsing follows the host UCRT as measured on it
+([execution-model.md](execution-model.md), phase 5, "Command line"). The host process's own
+command line is never read or changed.
+
+| Function | Status | Notes |
+|---|---|---|
+| `GetCommandLineA`, `GetCommandLineW` | implemented | The guest's line; the narrow one in the ANSI code page. A line left empty is the quoted program path, as `CreateProcess` makes it. |
+| `_configure_narrow_argv`, `_configure_wide_argv` | implemented | Parse `_acmdln` or `_wcmdln` as it is when called, into a new argv each call, and set the program name of their width. An empty or null line parses the program path instead. Mode 0 changes nothing; a mode out of range is `EINVAL` through the invalid parameter handler. Expanded mode leaves wildcards as written and logs that once. |
+| `__p___argc`, `__p___argv`, `__p___wargv`, `__p__acmdln`, `__p__wcmdln`, `__p__pgmptr`, `__p__wpgmptr` | implemented | Stable pointers to the guest's own globals. |
+| `_get_pgmptr`, `_get_wpgmptr` | implemented | `EINVAL` through the handler before the configure of their width, or for a null out pointer. |
+| `_get_narrow_winmain_command_line`, `_get_wide_winmain_command_line` | implemented | The rest of `_acmdln` or `_wcmdln` after the program name and the blanks after it; an empty string for a null line. |
 
 <!-- Template for a folder:
 

@@ -311,8 +311,8 @@ g6_add_test(test_io LABEL nogame
     LIBS g6io)
 
 g6_add_test(test_imports LABEL nogame
-    SOURCES imports/test_default_policy.cpp imports/test_files.cpp imports/test_registry.cpp
-            imports/test_xmem.cpp
+    SOURCES imports/test_command_line.cpp imports/test_default_policy.cpp imports/test_files.cpp
+            imports/test_registry.cpp imports/test_xmem.cpp
     LIBS g6imports runtimeobject)
 
 # The guest executable for test_crt_exit: original, and release /MD like the game's executable,
@@ -336,6 +336,29 @@ g6_add_test(test_crt_exit LABEL nogame
 target_include_directories(test_crt_exit PRIVATE fixtures/exit_guest)
 target_compile_definitions(test_crt_exit PRIVATE G6_EXIT_GUEST_DIR="${G6_EXIT_GUEST_DIR}")
 add_dependencies(test_crt_exit exit_guest)
+
+# The guest executable and DLL for test_crt_args: original, release /MD, and onecore_apiset, as
+# for test_crt_exit, in a folder of their own.
+set(G6_ARGS_GUEST_DIR ${CMAKE_BINARY_DIR}/args_guest)
+add_library(args_guest_dll SHARED fixtures/args_guest/args_guest_dll.c)
+add_executable(args_guest fixtures/args_guest/args_guest.c)
+foreach(target args_guest_dll args_guest)
+    g6_target_defaults(${target})
+    set_target_properties(${target} PROPERTIES
+        MSVC_RUNTIME_LIBRARY MultiThreadedDLL
+        RUNTIME_OUTPUT_DIRECTORY ${G6_ARGS_GUEST_DIR})
+    target_link_options(${target} PRIVATE /INCREMENTAL:NO /NODEFAULTLIB:kernel32.lib)
+    target_link_libraries(${target} PRIVATE onecore_apiset)
+endforeach()
+target_link_options(args_guest PRIVATE /SUBSYSTEM:CONSOLE)
+target_link_libraries(args_guest PRIVATE args_guest_dll)
+
+g6_add_test(test_crt_args LABEL nogame
+    SOURCES imports/test_crt_args.cpp
+    LIBS g6imports)
+target_include_directories(test_crt_args PRIVATE fixtures/args_guest)
+target_compile_definitions(test_crt_args PRIVATE G6_ARGS_GUEST_DIR="${G6_ARGS_GUEST_DIR}")
+add_dependencies(test_crt_args args_guest)
 
 g6_add_test(test_game_files LABEL game
     SOURCES game/test_game_files.cpp

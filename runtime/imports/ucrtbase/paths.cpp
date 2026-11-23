@@ -17,6 +17,7 @@
 #include "g6/io/text.h"
 #include "g6/loader/import_registry.h"
 #include "g6/log.h"
+#include "ucrtbase/host_crt.h"
 
 // NOLINTBEGIN(bugprone-reserved-identifier)
 namespace g6::imports::ucrtbase {
@@ -24,9 +25,7 @@ namespace {
 
 using io::Resolved;
 
-// The host CRT that the guest's forwarded api-ms-win-crt-* imports bind to: ucrtbase.dll. The
-// runtime's own CRT can be another one (ucrtbased in debug builds), so every FILE object, errno
-// value, and malloc'd buffer the guest gets comes from this one.
+// The functions of the host CRT (ucrtbase/host_crt.h) that the path functions call.
 class HostCrt {
 public:
     using Open = FILE* (*)(const wchar_t*, const wchar_t*);
@@ -60,32 +59,18 @@ public:
 
 private:
     HostCrt() {
-        HMODULE module = LoadLibraryExW(L"ucrtbase.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (module == nullptr) {
-            LOG_ERROR(crt, "cannot load the host's ucrtbase.dll (error {})", GetLastError());
-            std::abort();
-        }
-        bind(module, "_wfopen", wfopen);
-        bind(module, "_wfopen_s", wfopen_s);
-        bind(module, "_wfsopen", wfsopen);
-        bind(module, "_wstat64", wstat64);
-        bind(module, "_waccess", waccess);
-        bind(module, "_wmkdir", wmkdir);
-        bind(module, "_wrmdir", wrmdir);
-        bind(module, "_wremove", wremove);
-        bind(module, "_wrename", wrename);
-        bind(module, "_errno", errno_location);
-        bind(module, "__doserrno", doserrno_location);
-        bind(module, "malloc", malloc);
-    }
-
-    template <typename Function>
-    static void bind(HMODULE module, const char* name, Function& function) {
-        function = reinterpret_cast<Function>(GetProcAddress(module, name));
-        if (function == nullptr) {
-            LOG_ERROR(crt, "the host's ucrtbase.dll has no {}", name);
-            std::abort();
-        }
+        bind_host_crt("_wfopen", wfopen);
+        bind_host_crt("_wfopen_s", wfopen_s);
+        bind_host_crt("_wfsopen", wfsopen);
+        bind_host_crt("_wstat64", wstat64);
+        bind_host_crt("_waccess", waccess);
+        bind_host_crt("_wmkdir", wmkdir);
+        bind_host_crt("_wrmdir", wrmdir);
+        bind_host_crt("_wremove", wremove);
+        bind_host_crt("_wrename", wrename);
+        bind_host_crt("_errno", errno_location);
+        bind_host_crt("__doserrno", doserrno_location);
+        bind_host_crt("malloc", malloc);
     }
 };
 

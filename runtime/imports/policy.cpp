@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include "combase/class_activation.h"
+#include "g6/imports/command_line.h"
 #include "g6/imports/crt_exit.h"
 #include "g6/imports/crt_paths.h"
 #include "g6/imports/files.h"
@@ -87,6 +88,9 @@ void add_crt(ImportRegistry& imports) {
     // The executable's exit handlers go to tables of its own, not the host CRT's process-wide
     // ones (docs/execution-model.md, phase 5, "Exit").
     ucrtbase::register_exit(imports);
+    // The guest's own command line, for the CRT's argument functions and GetCommandLine
+    // (docs/execution-model.md, phase 5, "Command line").
+    register_command_line(imports);
 
     // The rest of the path functions: those that return -1 on failure ...
     stub_each(imports, kCrt,

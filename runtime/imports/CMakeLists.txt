@@ -2,6 +2,7 @@
 # policy that binds every import to it, to the host, or to a stub (docs/side-dlls.md and
 # docs/hle-status.md).
 add_library(g6imports STATIC
+    command_line.cpp
     policy.cpp
     combase/class_activation.cpp
     kernelbase/files.cpp

@@ -158,6 +158,24 @@ TEST_CASE("the path functions runtime/io maps are HLE, never the host's") {
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_Exit", L"ucrtbase.dll"},
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_cexit", L"ucrtbase.dll"},
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_c_exit", L"ucrtbase.dll"},
+        // The guest's own command line (g6/imports/command_line.h).
+        {"api-ms-win-core-processenvironment-l1-1-0.dll", "GetCommandLineA", L"kernelbase.dll"},
+        {"api-ms-win-core-processenvironment-l1-1-0.dll", "GetCommandLineW", L"kernelbase.dll"},
+        {"kernel32.dll", "GetCommandLineW", L"kernelbase.dll"},
+        {"kernelbase.dll", "GetCommandLineA", L"kernelbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_configure_narrow_argv", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_configure_wide_argv", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p___argc", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p___argv", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p___wargv", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p__acmdln", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p__wcmdln", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p__pgmptr", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "__p__wpgmptr", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_pgmptr", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_wpgmptr", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_wide_winmain_command_line", L"ucrtbase.dll"},
     };
     for (const Expected& item : expected) {
         INFO(std::string(item.dll) + "!" + item.name);

@@ -476,6 +476,33 @@ Phases 1, 2, and 4 don't need the main executable.
      callbacks run, and the CRT's argument functions read the environment when they are called,
      not from a pointer kept at startup.
 
+     **Checked here** (Windows 11 26200, ANSI code page 1252, scratch `/MD` programs on the host
+     UCRT): `_acmdln` is the pointer `GetCommandLineA` returns. `_configure_narrow_argv` reads
+     `_acmdln` when it is called and builds a new argv each time; the pointer `__p___argv`
+     returns stays the same. Mode 0 (no arguments) returns 0 and changes nothing; a mode out of
+     range sets `errno` to `EINVAL`, calls the invalid parameter handler, and returns 22. In the
+     program name, quotes only toggle, backslashes stay as written, and only a space or tab
+     outside quotes ends it, so leading spaces give an empty `argv[0]`. The arguments follow the
+     documented backslash and quote rules, with a doubled quote inside quotes giving one literal
+     quote. An empty `_acmdln` makes the CRT parse the program's path in its place, so a path
+     with a space splits; a null one gives an empty WinMain line. The WinMain line skips the
+     program name, which ends at any byte up to a space outside quotes, then the blanks after it.
+     `_pgmptr` is set only by the narrow configure and `_wpgmptr` only by the wide one; before
+     that, `_get_pgmptr` gives `EINVAL` through the handler. `CreateProcess` with no command
+     line gives the child the quoted application path.
+
+     **Ours** (`g6/imports/command_line.h`): the runner sets the guest's program path and
+     command line before it loads anything, and `GetCommandLineA`, `GetCommandLineW`, and the
+     CRT's argument functions (`_configure_narrow_argv`, `_configure_wide_argv`, `__p___argc`,
+     `__p___argv`, `__p___wargv`, `__p__acmdln`, `__p__wcmdln`, `__p__pgmptr`, `__p__wpgmptr`,
+     `_get_pgmptr`, `_get_wpgmptr`, and the two WinMain functions) answer from it with the rules
+     above. A line left empty becomes the quoted program path, as `CreateProcess` would make
+     it. Expanded-argument mode leaves wildcards as written; a wildcard in an argument is logged
+     once. The host process's own command line is never read or changed. Tested by
+     `test_command_line`, which compares the parser with the host CRT line by line, and
+     `test_crt_args`, where an original `/MD` executable's `main` gets the guest's arguments and
+     a DLL it imports sees the line while the loader attaches it.
+
 ## Milestones
 
 * **M0**: PE readers, function discovery, import table. Unchanged and done for the side DLLs.
