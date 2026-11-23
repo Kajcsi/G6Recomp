@@ -148,7 +148,10 @@ Static TLS for modules we map ourselves uses only documented behaviour:
   TLS block, and loads them normally. Windows then gives every thread a block for each donor,
   including threads started later by host libraries. A donor must import at least one
   function: Windows sets up the static TLS of a DLL loaded at run time while binding its
-  imports, and a DLL with none keeps index 0 and gets no blocks.
+  imports, and a DLL with none keeps index 0 and gets no blocks. Xbox2Windows measured the same
+  on Windows 10 19045, and that an import table holding only its null entry is enough. It
+  also found that a TLS template ending past the image fails the load with error 998, and one
+  ending before it starts with error 193.
 * Each guest module with a TLS directory gets one donor. The loader writes that donor's TLS
   index into the guest module's own index variable.
 * A thread notifier, `g6threads.dll`, also loaded normally, passes `DLL_THREAD_ATTACH` and
@@ -336,6 +339,17 @@ on it:
 1. A relocation table, or a preferred base that is free in the host process. Section raw data
    aligned to 0x200-byte sectors: Windows reads whole sectors, and our reader copies exactly
    `SizeOfRawData`, which agree only for aligned sections ([related-work.md](related-work.md)).
+   * **Measured here** (Windows 11 26200, `LoadLibraryExW` on an original fixture with its
+     section headers edited), agreeing with Xbox2Windows' 11 cases on Windows 10: Windows
+     refuses an image (error 193) only when a section's raw data ends at or past 4 GiB, or when
+     the last section's raw data runs past the end of the file, even by one byte. A section
+     with `SizeOfRawData` 0 isn't checked. Any other section may run past the end of the file
+     or start after it, and the bytes the file lacks read as zero. Our PE reader applies the
+     same checks (`test_pe`).
+   * Not modelled: the last section also failed whenever its raw data started at an offset that
+     isn't a multiple of `FileAlignment` (193, or 998 at one offset), while a middle section at
+     such an offset loaded. Every side DLL has aligned offsets and its last section inside the
+     file.
 2. TEB offsets beyond the four above, and any PEB access.
 3. `syscall` or other system instructions.
 4. Instructions the target hosts lack, and the `cpuid`/`xgetbv` sites.
@@ -345,7 +359,9 @@ on it:
    proceed before any hooking. This plan doesn't cover working around it.
 8. Which drive letters its path strings use, so `runtime/io` mounts the right ones
    ([io.md](io.md), "The model"). `G:` for the package and `T:` for scratch space are
-   assumptions until then.
+   assumptions until then. Look for `D:` and the `GAME:` prefix too: XDefiant uses `D:` for its
+   package (xcl), and Leonida serves `GAME:`, `G:` and `T:` because it doesn't know which one
+   GTA VI uses.
 
 ## Phases
 
@@ -427,6 +443,19 @@ Phases 1, 2, and 4 don't need the main executable.
 5. **Main executable.** Pre-flight, then map it and run it to its entry point. Then the
    stub-first loop from `CLAUDE.md`: add a logging stub, confirm the game gets further, then
    implement.
+
+   Rules other projects found running an executable this way (reported by Leonida, measured
+   against native runs there):
+   * **Exit.** The mapped executable's CRT startup registers its `atexit` handlers and static
+     destructors in the host CRT's process-wide table, since the CRT API sets forward to the
+     host's UCRT. A runner that ends with `ExitProcess` never runs them, and a guest `exit`
+     would run the host's handlers too. Leonida gives the guest a table of its own and follows
+     the native rules for `exit`, `_cexit`, `_exit` and `quick_exit`. `at_quick_exit` and
+     `_register_thread_local_exe_atexit_callback` are open there. Check what the UCRT does on a
+     second registration of the latter, since our host executable may register first.
+   * **Command line.** The game's command line has to be in place before the process-attach
+     callbacks run, and the CRT's argument functions read the environment when they are called,
+     not from a pointer kept at startup.
 
 ## Milestones
 

@@ -56,7 +56,9 @@ version is 1.0.2.1, which is the build ID used by `game/config`.
   Opus packets are framed in 2048-byte blocks, each packet preceded by a 16-bit length. Desktop
   XAudio2 plays neither Opus nor XMA2, so `runtime/audio` will need software decoders for both.
   * **Reported** (Leonida): dialogue is 48 kHz mono Opus, and AWC tag 0x5c holds lip-sync data.
-  * **Reported** (Xbox2Windows): all 1,342 format tags it read say 48 kHz and codec 11.
+  * **Reported** (Xbox2Windows): all 1,342 format tags it read say 48 kHz and codec 11. Later,
+    from the public vgmstream reader: some banks are big-endian, and format tag 0xFA keeps its
+    codec byte at +19.
   * **Reported** (RageForge): a stream's own sample rate is the 16-bit word at +8 of its format
     chunk (tag 0x76). In a multichannel bank, the stream-format chunk (tag 0x48) holds a 16-byte
     record per channel from +12, with the channel's rate at +10 of the record. RageForge falls

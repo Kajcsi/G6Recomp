@@ -29,7 +29,7 @@ functions to C++, one at a time, and checks each against the original. We run gu
 natively. So its translators don't carry over, but its measurements of the package and of
 desktop D3D12 do.
 
-**Last reviewed: commit `7b55abc` (2026-11-22).** No code has been copied. If code is ever
+**Last reviewed: commit `579d13f` (2026-11-23).** No code has been copied. If code is ever
 copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES.md).
 
 ### Taken
@@ -71,9 +71,20 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | All 1,342 AWC format tags they read say 48 kHz and codec 11 | Reported | [game-package.md](game-package.md) |
 | BCPack: BC1 blocks decode; BC7 still needs its tables | Reported. Advances the BC7 row above | Later: `runtime/io` and `runtime/gpu` (M2–M3) |
 | Pixel shaders' first unresolved read: a 16-byte descriptor load in 2,927 records, through s8, s9, or s10, most often at s9+0; `PSV0` doesn't give the original register or space | Reported | [shaders.md](shaders.md) |
-| `v_cvt_u32_f32` truncates, maps NaN and negatives to 0, and saturates; `v_sin` and `v_cos` take turns; `v_cvt_f16_f32` rounds to nearest even and keeps the destination's high half | Reported, and for the conversions only an assumption: upstream now says that rule comes from an issue citing the ISA, not re-checked against it or measured on the console. It adds `v_cvt_i32_f32`: NaN gives 0, and values out of range saturate to 0x80000000 and 0x7FFFFFFF | [shaders.md](shaders.md) |
+| `v_cvt_u32_f32` truncates, maps NaN and negatives to 0, and saturates; `v_sin` and `v_cos` take turns; `v_cvt_f16_f32` rounds to nearest even and keeps the destination's high half | Reported, and for the conversions only an assumption: upstream now says that rule comes from an issue citing the ISA, not re-checked against it or measured on the console. It adds `v_cvt_i32_f32`: NaN gives 0, and values out of range saturate to 0x80000000 and 0x7FFFFFFF. Later still, upstream marks what any 16-bit result leaves in the high half as unmeasured, `v_cvt_f16_f32` included, and treats LLVM's rule as a hypothesis | [shaders.md](shaders.md) |
 | The console's 32-bit denormal mode is unmeasured; their checks assume denormals are kept | Reported. Leonida reads them as flushed | [shaders.md](shaders.md) |
-| A pixel shader exports binary16 rounded toward zero | Reported. Fits our scan: 4,776 pixel shaders switch f16 rounding to toward zero | [shaders.md](shaders.md) |
+| A pixel shader exports binary16 rounded toward zero | Reported. Fits our scan: 4,776 pixel shaders switch f16 rounding to toward zero. The row below explains why | [shaders.md](shaders.md) |
+| Round-toward-zero is there only for f16 interpolation: over 4,187 pixel records, the first MODE write that sets it comes before `v_interp_p1ll_f16` and `v_interp_p2_f16`, no other rounding binary16 instruction runs while it holds, and no other register or MODE field is written in any stage | Checked here with our decoder: the 4,776 programs are exactly those whose f16 interpolations read a high half and whose input table has a flag-bit-4 record; the rest agrees | [shaders.md](shaders.md) |
+| 2,011 pixel records write `FLAT_SCR_LO` and `FLAT_SCR_HI` as their second and third instructions and contain no scratch or flat instruction | Checked here for every stage: none of the 12,741 programs that write the pair has such an instruction, so a translation drops the writes | [shaders.md](shaders.md) |
+| Pixel shaders' descriptors traced over 4,411 records: how many each reads through `s_buffer_load`, how many entry registers each uses, and where the trace stops (1,553 at an entry SGPR nothing set, 582 at a 16-byte descriptor no load reads) | Reported | [shaders.md](shaders.md) |
+| Interpolation on an RTX 3070 lands one or two f32 ulps low in 133 of 276 values, enough to change 17 pixels after rounding to f16 toward zero; WARP is exact | Reported | [shaders.md](shaders.md) |
+| A comparison sampler's function is S# word 0 bits 14:12, in `D3D12_COMPARISON_FUNC` order minus one, and `TRUNC_COORD` is bit 27. A sampler used both for comparison and ordinary sampling needs two host samplers | Reported (RTX 3070, GTX 1060 and WARP) | [shaders.md](shaders.md) |
+| Host facts: Intel GPUs run 16-lane waves and WARP 4; the `MinLod` weight is quantized to 1/256; WARP 10.0.26100.9818 removes the device for a mesh pipeline without a pixel shader; an RX 570 on vkd3d-proton has shader model 6.6; a GTX 1060 has DXR 1.0 and Windows 10 19041's WARP none. DXC's GVN pass dominates compile time on sample-heavy shaders, and `-Od` cuts it by 84% or more | Reported | [shaders.md](shaders.md) |
+| Windows refuses an image for raw data only when a section's raw data ends at or past 4 GiB or the last section's runs past the end of the file; other sections may lie past it and read as zero; a section with `SizeOfRawData` 0 isn't checked | Checked here on Windows 11 26200 with an original fixture, which also showed one rule they don't list (the last section at an unaligned offset fails). Our PE reader rejected a middle section past the end of the file and accepted a cut-off last one; it now follows Windows (`test_pe`) | [execution-model.md](execution-model.md), `common/src/pe/image.cpp` |
+| A DLL with no import directory gets no TLS index, and an import table holding only its null entry is enough. A TLS template ending past the image fails with error 998, and one ending before it starts with 193 | Reported (Windows 10 19045). Our donors import a function, as the design requires | [execution-model.md](execution-model.md) |
+| Their `D3D12XboxCreateDevice` shim refuses a parameter block and any interface but `ID3D12Device` | Reported as their assumption; Leonida reports a 24-word block | [d3d12x.md](d3d12x.md) |
+| Some AWC banks are big-endian, and format tag 0xFA keeps its codec byte at +19 (from vgmstream) | Reported | [game-package.md](game-package.md) |
+| Their census now matches ours: 21,522 cache shaders, 26,503 records, 25,889 digests | Reported; agrees with our counts | [shaders.md](shaders.md) |
 | An export forwarder whose target DLL name is in upper case resolves to the same provider as in lower case | Checked here by reading: our loader lowercases the DLL part of a forwarder before the lookup. No fixture exercises a guest forwarder yet, and the 16 side DLLs export none | `runtime/loader` |
 | NVIDIA drivers reject some shaders compiled with `-denorm preserve`: pipeline creation returns `E_OUTOFMEMORY` on an RTX 5080 (32.0.16.2101) and an RTX 5060 Ti (32.0.16.2124), where WARP accepts them | Reported. Matters when `shaderrecomp` picks a denormal mode | Later: `shaderrecomp` (M3) |
 | DXIL has no binary16 denormal setting: DXC's `-denorm` sets only the 32-bit mode. Computing packed f16 in f32 and narrowing in integers gives the same results under either mode | Reported. The console's f16 denormal mode is still unmeasured | Later: `shaderrecomp` (M3) |
@@ -104,10 +115,19 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
   `QuadReadAcross*`, outside conditions; packed-f16 narrowing in integers, which can follow the
   round-toward-zero mode 4,776 pixel shaders set where `f32tof16` can't; and the NaN-safe,
   saturating float-to-int helpers.
+* **Code for `runtime/gpu` (M3)**, not copied yet: `comparison_sampler_state()`, which maps the
+  S# compare and `TRUNC_COORD` bits to a D3D12 sampler, and `title_va_lookup.hlsli`, a lookup of
+  a guest address in a sorted range table, for `memory_tracker`. Its decoder fixes (64-bit
+  VOP3 and DS operands, GFX10 `s_waitcnt` fields, `v_fma_mix` modifiers, DPP and SDWA second
+  words) are worth comparing with ours.
+* **The BCPack rANS decoder** (Python, vendored from bcpack-rs). Before taking it, find where
+  its "MIT-licensed model tables" come from: tables derived from the console's software stay
+  out (hard rule 2).
+* **The TTPF batch DDS exporter.** An asset exporter, so it stays out whatever its licence.
 
 ### Next review
 
-1. Run `git log 7b55abc..origin/main` in a scratch clone outside the repo.
+1. Run `git log 579d13f..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/experiments.md` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -127,7 +147,7 @@ code can be ported with its notices kept. Little of it fits as it is, though: it
 Python and its translator emits SPIR-V. We take its measurements as facts, check them on our
 copy, and port code only where it fits our design.
 
-**Last reviewed: commit `4eb6155d` (2026-11-22).** No code has been copied yet.
+**Last reviewed: commit `3faac557` (2026-11-23).** No code has been copied yet.
 
 ### Taken
 
@@ -139,7 +159,7 @@ copy, and port code only where it fits our design.
 | World textures are 57 loose `RDS5` pools (`.ttpf`), not inside archives | Checked: 57 pools, 46 under `data` and 11 under `pack`, 57.9 GiB | [game-package.md](game-package.md) |
 | 26,503 scene shaders: 2,236 vertex, 12,101 pixel, 2,689 compute, 9,282 mesh, 195 geometry, each with its native program unpacked from an `FSSM` image | Checked by our own reader, `shaderrecomp scan`, and the local `test_shader_census`. We also found that no container carries LLVM bitcode, and that 195 vertex shaders carry two native programs | [shaders.md](shaders.md) |
 | Disassembly as `gfx1013`, and where the code starts in an `FSSM` image | Reported | [shaders.md](shaders.md) |
-| Most shaders are wave64; mesh shaders are NGG wave64; geometry shaders are legacy wave32 | Reported | [shaders.md](shaders.md) |
+| Most shaders are wave64; mesh shaders are NGG wave64; geometry shaders are legacy wave32 | Reported, then corrected upstream: from FSSM word 0xD4 it now counts 23,841 wave64 and 2,662 wave32 records, all 195 geometry programs wave64. That agrees with our 24,036 and 2,662 programs (the 195 second programs make the difference) | [shaders.md](shaders.md) |
 | Vertex fetch, pixel and compute system inputs, `COMPUTE_PGM_RSRC2` at FSSM word 0x138, and descriptors read through user SGPRs | Reported | [shaders.md](shaders.md) |
 | POPS in 10 pixel shaders; hardware BVH intersection in 64 compute shaders, emulated the way RADV does in software | Reported | [shaders.md](shaders.md) |
 | `audio.rpf` holds AWC banks: 1,601,167 Opus streams, 1,818 XMA2, 227 float PCM, 19 PCM16; Opus is framed as 2048-byte blocks of a 16-bit length and a packet | Reported | [game-package.md](game-package.md); later `runtime/audio` (M4) |
@@ -149,15 +169,15 @@ copy, and port code only where it fits our design.
 | An RTTI scan names the classes, bases, and vtables of a binary without symbols | Ported as our own code: `x64recomp rtti`, tested on an original fixture and clean on all 16 side DLLs | [re-workflow.md](re-workflow.md) |
 | Console command lists record their commands inline, into a buffer inside the list object, and their method slots are shifted from desktop D3D12: `SetDescriptorHeaps` is slot 32 (28 on desktop), `ExecuteIndirect` 61 (59), and slots 85, 141, and 146 exist only on the console | Inline records checked on the BVH builder: every one first checks for room and otherwise calls the method, so a list object with no room avoids the risk that game code writes a buffer we can't see. The main executable needs the same check. The builder's slots fit `SetDescriptorHeaps` at 32: desktop compute root slots 29 to 41 sit four higher. Slot 146 takes the enhanced `Barrier` arguments. The builder never calls `ExecuteIndirect`, but the upscaler settles it at 61 (below) | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
 | The device's descriptor-heap start-handle getters return the handle in RAX. Device slot 76 creates console textures; slot 67 creates a native compute pipeline and falls back to slot 62. `D3D12XboxCreateDevice` takes a 24-word parameter block | Reported | Later: `runtime/gpu` (M3) |
-| `core_bvh4.rpf` holds about 272,000 prebuilt bottom-level acceleration structures (64-byte nodes, version 6) and no source geometry | Reported. A risk for replacing the BVH builder with desktop DXR builds, which need geometry | [shaders.md](shaders.md) |
+| `core_bvh4.rpf` holds about 272,000 prebuilt bottom-level acceleration structures (64-byte nodes, version 6) and no source geometry | Reported. A risk for replacing the BVH builder with desktop DXR builds, which need geometry. Later upstream: the structures are dehydrated, holding primitive references whose triangles come from `levels.rpf` drawables, and the rehydrate method runs on the CPU, which weakens the risk | [shaders.md](shaders.md) |
 | Mesh shaders' v5 holds the group index times the thread count plus the lane | Reported. Leonida now reads v5 as xbox-emulator does | [shaders.md](shaders.md) |
 | FSSM words 0x13C to 0x144 hold the thread-group size in 2,281 of 2,689 compute shaders | Checked here: in all 2,689 compute records the three words equal `PSV0`'s thread counts | [shaders.md](shaders.md) |
-| 21,545 of the 26,503 shaders run 64 lanes, by broader markers than EXEC use | Reported. Our EXEC word scan counts 20,634, so it is a lower bound | [shaders.md](shaders.md) |
+| 21,545 of the 26,503 shaders run 64 lanes, by broader markers than EXEC use | Reported, then retracted upstream for the 0xD4 count in the wave-size row above. Our EXEC word scan counts 20,634, a lower bound | [shaders.md](shaders.md) |
 | The two-program vertex shaders are a merged export stage plus an ordinary vertex program | Reported. Supports our reading without proving it | [shaders.md](shaders.md) |
 | Texture pools: the `RDS5` codec field is the public BCPack mode; BCPack covers 11.6 of 57.7 GiB, almost all BC1, and its output is still tiled; tile mode 0 is a 64 KiB tile; mips are stored smallest first | Reported | [game-package.md](game-package.md) |
-| Translator facts: 1,473 shaders read constants from their own code; IEEE mode is off and denormals are flushed; some shaders truncate descriptor pointers to 32 bits, so shader-visible heaps must sit in the low 4 GiB of GPU addresses; large root signatures spill to memory; ray-tracing compute shaders compile slowly enough to need background compilation | Reported | [shaders.md](shaders.md) |
+| Translator facts: 1,473 shaders read constants from their own code; IEEE mode is off and denormals are flushed; some shaders truncate descriptor pointers to 32 bits, so shader-visible heaps must sit in the low 4 GiB of GPU addresses; large root signatures spill to memory; ray-tracing compute shaders compile slowly enough to need background compilation | Reported. The IEEE and denormal modes are an inference upstream, not a value read from the images: testing 88 FSSM words as `PGM_RSRC1` gave no result, and 25 positions survive its VGPR check. The words next to our known `PGM_RSRC2` words are the cheap next test | [shaders.md](shaders.md) |
 | `SFI0` flags: 685 shaders use 64-bit atomics, 30 tiled resources, 10 rasterizer-ordered views | Checked here: the same three counts, the 64-bit atomics all on typed resources. 18,227 records also set descriptor-heap indexing | [shaders.md](shaders.md) |
-| The BVH builder's batched build descriptor layout, and 53 shader containers | Layout reported. We count 52 containers; the difference is unexplained | [shaders.md](shaders.md) |
+| The BVH builder's batched build descriptor layout, and 53 shader containers | Layout reported. We count 52 containers. Settled upstream: the container for `GetBVHCompactedSize` is created twice, at the 47th and 53rd creations | [shaders.md](shaders.md) |
 | More FSSM header words, and a table of 20-byte records | Reported | Later: `shaderrecomp` |
 | GameInput's v0 interface differs from v1 and later, so a title's version has to be checked | Reported | Later: `runtime/input` (M4) |
 | 33 GDK functions in HRESULT-returning families return something else (for example `XTaskQueueDispatch`, `XUserCloseHandle`, `XStoreIsLicenseValid`) | Reported. Our "unimplemented returns `E_NOTIMPL`" rule has to follow each function's real return type | [hle-status.md](hle-status.md) |
@@ -168,7 +188,7 @@ copy, and port code only where it fits our design.
 | A pixel shader's FSSM image has 8-byte input records from 0x138 while the first byte is 6; bits 0 and 1 of byte 7 give each position's read method (`v_interp_mov` or `p1`/`p2`), not its interpolation mode | Checked here, with a correction: the word at 0x238 counts the records (xcl), and 32 of them are of kind 7, where a first-byte rule stops. 55,937 records, 1,784 tables empty. Exactly one of the two bits is set in every record, bit 1 in 51,327 and bit 0 in 4,610. Which instruction reads each position is reported | [shaders.md](shaders.md) |
 | Every interpolated pixel input is perspective-correct at the pixel center, by `PSV0`; the position's w holds 1/w | Reported | [shaders.md](shaders.md) |
 | The only MODE field the programs write is the f16/f64 rounding field | Checked here (word scan): the only MODE field `s_setreg_imm32_b32` sets. Pixel shaders set it to toward zero (4,776) or nearest even; other stages only to nearest even. 19 words could be `s_setreg_b32` of the f32 field | [shaders.md](shaders.md) |
-| 16-bit ALU results keep the high half on GFX10; narrowing to f16 is done in integers because AMD drivers lower `PackHalf2x16` to round toward zero; on a gfx1031 GPU the f16 transcendentals are correctly rounded and `v_sin`/`v_cos` take turns | Reported | [shaders.md](shaders.md) |
+| 16-bit ALU results keep the high half on GFX10; narrowing to f16 is done in integers because AMD drivers lower `PackHalf2x16` to round toward zero; on a gfx1031 GPU the f16 transcendentals are correctly rounded and `v_sin`/`v_cos` take turns | Reported. The high-half rule is an assumption (Xbox2Windows marks it unmeasured); the one measured case is an SDWA `dst_sel:DWORD` result, which zeroes the high half. xbox-emulator's gfx1036 models refine the transcendentals: correctly rounded except about 20 sin and cos inputs | [shaders.md](shaders.md) |
 | A NaN stored through a normalized buffer format becomes zero | Reported | [shaders.md](shaders.md) |
 | `Barrier` (list slot 146) is called 29 times in 7 builder functions, 18 of them through a register | Checked here: 11 direct calls and 18 through a register, in 7 functions. Our earlier 11 counted only the direct ones | [d3d12x.md](d3d12x.md) |
 | List slots 71 and 73 are probably a GPU label write and a masked-compare wait, behind a flag nothing sets, so the shipping builder never calls them | Checked here: all 7 calls of each sit behind two zero flag bytes that no builder code writes, takes the address of, or points at. What the slots do is reported | [d3d12x.md](d3d12x.md) |
@@ -187,18 +207,37 @@ copy, and port code only where it fits our design.
 | AMD's MIT-licensed ISA XML lists 1,153 RDNA 2 instructions and leaves out `v_mac_f32`, `v_mad_f32`, `v_mad_legacy_f32`, `v_madak_f32`, `v_madmk_f32`, and `s_get_waveid_in_workgroup` | Reported. Our decoder names the four gfx10.1 opcodes xcl reports | Later: `shaderrecomp` name tables |
 | The upscaler's FSPX container has kinds 0, 1, 6 and 7; kind 6 uses `v_dot4`, so it targets gfx1030 | Reported | Not needed while the upscaler is replaced |
 | BVH4 nodes: the four triangle slots per leaf and a remap byte at leaf +60 follow AMD's GPURT (MIT); bottom-level addresses are stored in 256-byte units. The XDXR layout comes from a public DagorEngine shader | Reported. The DagorEngine file may itself derive from console SDK material, so nothing is taken from it until that's settled | [shaders.md](shaders.md), "Ray tracing" |
-| libHttpClient and XCurl load `xgameruntime.dll` at run time and look up five entry points (`InitializeApiImpl*`, `QueryApiImpl`). An interface-GUID census dates the GDK (`IXUserImpl5`, `IXPackageImpl3`) | Reported. The entry-point signatures come from a GPL-3.0 project that reverse engineered the PC runtime; its provenance has to be checked before we rely on it | Later: `runtime/gdk` |
-| A `GAME:\` path prefix (reported by xcl) | Reported; whether this build's own code uses it isn't known. We mount the install at `G:` | [io.md](io.md) |
+| libHttpClient and XCurl load `xgameruntime.dll` at run time and look up five entry points (`InitializeApiImpl*`, `QueryApiImpl`). An interface-GUID census dates the GDK (`IXUserImpl5`, `IXPackageImpl3`) | Reported. The entry-point signatures come from a GPL-3.0 project that reverse engineered the PC runtime; its provenance has to be checked before we rely on it. Corrected upstream: libHttpClient references 23 of the 24 classes (not `XGameActivationImpl`), and the IDs come from thunks an incremental link kept, not from calls. The GDK dating stands; reading the list as the classes used doesn't | Later: `runtime/gdk` |
+| A `GAME:\` path prefix (reported by xcl) | Reported; whether this build's own code uses it isn't known. We mount the install at `G:`. Leonida now serves `GAME:`, `G:` and `T:` and says only the executable can tell | [io.md](io.md), [execution-model.md](execution-model.md) pre-flight |
 | Bink 2 streams by archive: 515 in `movies`, 264 in `story000`, 7 in `story000_restofworld`, 11 in `core_restofworld`, 797 in all | Reported. Settles the 797 against 515 question | [game-package.md](game-package.md) |
 | Swizzles: `SW_64KB_D` at 4 bytes per pixel swaps address bits 6 and 7 compared with Navi 1x (167 of 167 validated); `SW_4KB_S` validated at 1, 2, 4 and 8 bytes per pixel | Reported | Later: `runtime/gpu` (M3) |
 | AWC Opus: the sample count is in 48 kHz frames even at 32 kHz, +0x0C holds frames per channel, the 312-sample priming isn't stored, and 2 banks have no streams | Reported | Later: `runtime/audio` (M4) |
-| Besides its bitcode, each of the BVH builder's 52 containers carries an `XDAT`/`XBCH` record that unpacks to an `FSSM` image, and that is what the console runs; 42 of the 52 programs translate so far. The builder makes 53 pipelines from the 52 containers | Reported. Settles the 52 against 53 row above: one container is used twice. Whether our `FSSM` reader takes the 52 isn't checked yet | [shaders.md](shaders.md) |
+| Besides its bitcode, each of the BVH builder's 52 containers carries an `XDAT`/`XBCH` record that unpacks to an `FSSM` image, and that is what the console runs; 42 of the 52 programs translate so far. The builder makes 53 pipelines from the 52 containers | Reported. Settles the 52 against 53 row above: one container is used twice. 51 of the 52 now translate upstream. Whether our `FSSM` reader takes the 52 isn't checked yet | [shaders.md](shaders.md) |
 | No GTA VI shader uses append or consume counters: no `PSV0` binding is a structured UAV with a counter, and no program has `ds_append`, `ds_consume`, or another GDS instruction. 5,359 shaders declare typed buffers | Checked for the code: no program reaches `ds_append`, `ds_consume`, `ds_ordered_count`, a GWS op, or a DS instruction with the gds bit. The driver's pipeline cache has 30 compute shaders with `ds_append` or `ds_consume` on LDS. The `PSV0` part is reported | [shaders.md](shaders.md) |
-| RDNA 2 measurements: an output modifier on an f16 result acts only with IEEE mode off and f16 denormals flushed, and does nothing otherwise; `v_fma_mix*` rounds once; `v_cvt_flr_i32_f32` and `v_cvt_rpi_i32_f32` saturate a NaN by its sign instead of giving 0; the VOP3 clamp bit saturates the carry-out adds and subtracts too; a d16 load of a normalized format rounds the exact value once to f16 | Reported, from raw kernels on gfx1030 to gfx1036. Which f16 denormal mode GTA VI's programs run in decides the first | Later: `shaderrecomp` (M3) |
+| RDNA 2 measurements: an output modifier on an f16 result acts only with IEEE mode off and f16 denormals flushed, and does nothing otherwise; `v_fma_mix*` rounds once; `v_cvt_flr_i32_f32` and `v_cvt_rpi_i32_f32` saturate a NaN by its sign instead of giving 0; the VOP3 clamp bit saturates the carry-out adds and subtracts too; a d16 load of a normalized format rounds the exact value once to f16 | Reported, from raw kernels on gfx1030 to gfx1036. Which f16 denormal mode GTA VI's programs run in decides the first, and it is still open | Later: `shaderrecomp` (M3) |
 | In `ds_permute_b32` only active lanes send, the highest active source lane wins a collision, an active lane nobody targets reads 0, inactive lanes keep their value, and the two halves of a 64-lane wave stay apart | Reported, measured on gfx1030 | Later: `shaderrecomp` (M3) |
 | A 32-lane pixel shader run 64 lanes wide reads the other half's lanes, which broke a pixel shader on RDNA 4, where pixel shaders default to 64 | Reported (Vulkan). D3D12 can't ask for a pixel shader's wave size, so a 32-lane pixel program has to be translated to work at either width | Later: `shaderrecomp` (M3) |
-| Its shim serves `GetCommandLineA/W` and the UCRT's WinMain command-line helpers, so the game sees its own command line rather than the host's | Reported. No rule here names those functions yet; phase 5 has to decide what the main executable sees | Later: `runtime/imports` (M1) |
+| Its shim serves `GetCommandLineA/W` and the UCRT's WinMain command-line helpers, so the game sees its own command line rather than the host's | Reported. No rule here names those functions yet; phase 5 has to decide what the main executable sees. Later upstream: the command line has to be set before the process-attach callbacks run, and the argument functions read the environment when called | [execution-model.md](execution-model.md) phase 5; later `runtime/imports` (M1) |
 | A title reaches a Game Runtime service by `QueryApiImpl`, then calls one vtable slot with `this` and the function's own arguments, then `Release` (slot 2); `0x80040154` from `QueryApiImpl` is handled specially | Reported, with the provenance caveat of the `QueryApiImpl` row above | Later: `runtime/gdk` |
+| How the interpolation unit lays out its parameters (48 bytes per attribute from M0), and what `v_interp_p1ll_f16`, `p1lv_f16` and `p2_f16` compute, `p2_f16` rounding once by MODE and keeping the high half | Reported, measured on gfx1035 and gfx1036 with parameters a compute wave wrote | [shaders.md](shaders.md) |
+| The VOP3 f16 interpolations carry the attribute in bits 0–5 of the first source, the channel in 6–7 and `high` in bit 8; 4,776 programs use `high`, 4,731 of them reading both halves of a channel | Checked here: decoding bit 8 finds the same 4,776 programs, exactly those that set f16 rounding toward zero (the Xbox2Windows row above). The 4,731 is reported | [shaders.md](shaders.md) |
+| Its input-signature join now matches by component-mask overlap and row span, since several elements can share a register row and one element can span rows | Reported. A lead for the records whose byte-1 register has fewer components than the record | Later: `shaderrecomp` |
+| FSSM word 0xFC isn't a render-target count (5 or 6 in some programs, 16 or 18 in others); the count comes from `OSG1` | Reported | [shaders.md](shaders.md) |
+| The upscaler's root signatures give its user SGPRs: 4 + one per table + two per root CBV, in signature order, with s0 to s3 a driver prefix and tables as 32-bit pointers from s4 | Reported, from the `RTS0` parts next to `COMPUTE_PGM_RSRC2` | [shaders.md](shaders.md) |
+| 99.86% of 770,412 descriptor loads take their base from a wave-start SGPR used as a 32-bit pointer; resource and sampler heaps have separate bases; T# offsets are multiples of 32 and S# offsets of 16 | Reported. Consistent with our register model | [shaders.md](shaders.md) |
+| Opcodes that exist only on gfx1013, against gfx103x (`v_mad`/`v_mac` and `_legacy`, `v_mul_lo_i32` as VOP3 0x16B, scalar stores, atomics and scratch, `s_dcache_wb`, the `ds_*_src2` forms), and VOP2 0x06 and VOP3 0x106 and 0x140 decoding differently on gfx103x | Reported (llvm-mc sweep). Our names agree with xbox-emulator's gfx1013 table (below) | [shaders.md](shaders.md) |
+| `v_mad_f32`, `v_mac_f32` and `v_mad_legacy_f32` flush denormals whatever MODE says, before and after the output modifier, on gfx1010; 9,297 shaders use them | Reported | [shaders.md](shaders.md) |
+| Buffer bounds follow Mesa's GFX11 column per `OOB_SELECT`, soffset included in raw mode (gfx1036 and gfx1011); the point mip filter rounds floor(λ+0.5) after `MIN_LOD` clamps; helper lanes: EXEC holds covered pixels, quad lane order (x&1)+2(y&1), helpers hold their own I/J; `v_cvt_pknorm_*` rounds once; d16 integer loads saturate; `image_get_resinfo` gives 2D depth 0 | Reported | [shaders.md](shaders.md) |
+| XCurl can load the PC's `gameplatformservices.dll` from System32, after reading a `GamingServices` registry value, and reach the Game Runtime through it | Checked here: `XCurl.dll` holds the names. The DLL is in the loader's networking deny list | [side-dlls.md](side-dlls.md), `runtime/loader` |
+| Wine 9 has no `CopyFile2` and binds an import of it to a stub that ends the process | Reported. Our HLE looks it up at run time and falls back to `CopyFileExW` | [hle-status.md](hle-status.md) |
+| `VirtualAlloc` with the console's `MEM_GRAPHICS` (0x10000000) or `MEM_TITLE` (0x40000000) fails on desktop with `ERROR_INVALID_PARAMETER` | Checked here on Windows 11 26200. The bit values are reported | [hle-status.md](hle-status.md) |
+| The executable probably reaches the Game Runtime only through `xgameruntime.lib` thunks; XCurl has 16, all called, and libHttpClient 404, of which it calls 15. Two interface IDs are missing from the public layouts, and the Wine IDL drops the documentation's "unknown" slots | Reported; the first is an assumption | [hle-status.md](hle-status.md) |
+| More real return types (`XErrorSetOptions`, `XSystemAllowFullDownloadBandwidth` void; `XSystemIsHandleValid` bool; `XErrorReport` HRESULT); `XThreadingImpl` slot 8 fails; `XStoreGameLicense` would be 104 bytes | Reported; the `XStore` sizes are unverified | [hle-status.md](hle-status.md) |
+| The executable's `atexit` handlers land in the host CRT's process-wide table; Leonida gives the guest its own and follows the native `exit`, `_cexit`, `_exit` and `quick_exit` rules | Reported, measured against native runs | [execution-model.md](execution-model.md) phase 5 |
+| Persistent local storage is 2048 MB in `MicrosoftGame.Config` | Checked here | [game-package.md](game-package.md), [io.md](io.md) |
+| `Bink2Scarlett.dll` decodes all 515 movies' first frames and all 229 audio tracks under a native loader with only xmem shimmed; `BinkSetFileOffset` with open flag 0x20 plays from `movies.rpf` in place | Reported | [side-dlls.md](side-dlls.md) |
+| `data.rpf` has 377 unread non-zero ranges (4.2%); streams aren't always 4 KiB-aligned; a resource's system part ends at a stream whose inflated size is a multiple of 64 KiB, plus at most one more; `core_bvh4.rpf` has 43 streams of exactly 8 MiB | Reported | [rpf.md](rpf.md) |
+| Host `GameInput.dll` can be bound from mapped code (GameInput 0.2309); v0's `GetTemporalReading` returns `E_NOTIMPL` by design; a title's raw mouse registration replaces any of our own | Reported | Later: `runtime/input` (M4) |
 
 ### Not taken
 
@@ -223,10 +262,31 @@ copy, and port code only where it fits our design.
   shim's guard-page vtables and thunks (M3); the user-SGPR census, ISA coverage and wave64
   tools for `shaderrecomp`; the GPU instruction oracle; and the XDXR BVH builder, once its
   provenance is settled.
+* **Its Game Runtime shims** (`runtime/shims/xgameruntime*.cpp`, about 3,700 lines: threading,
+  errors, offline networking, system, package, storage, saves as files, one local user, a store
+  with the game licence only, and offline stubs), for `runtime/gdk`. They fit when we build it,
+  with three changes: saves go to our data directory, a save update is atomic for the whole
+  container (theirs renames blob by blob), and **`LEONIDA_CONTENT_PACKAGES`, which mounts
+  arbitrary content packages, stays out** (hard rule 6). Also for later: Microsoft's MIT
+  XTaskQueue and XAsync, vendored unmodified from libHttpClient; its startup trace and "stop at
+  the first unimplemented import" switch, as ideas for phase 5; and its static scan of Game
+  Runtime thunks, whose class table comes from xgameruntime-docs, so that licence is checked
+  first. Its offline WinHTTP layer loads the host's `winhttp.dll` for URL parsing, so it would
+  need our own parser.
+* **Shader tools for later:** the HIP launcher that runs raw gfx10 kernels as a hardware oracle,
+  the interpolation probes' exact models and 30 f16 tie vectors (test vectors for our
+  lowering), the heap-index and root-signature census scripts, and the D3D12 conformance
+  renderer (M3).
+* **Its notes on game content and mods:** the world-prop viewer, archetype swaps, first-person
+  view, the music stem locations, and the models, animation, story and world notes (hard rule
+  1). `d3d12_xs_surface.md` rests on another project's copy of a console vendor DLL, which is
+  console OS material.
+* **meetox80/6stars**, which its related-projects page lists, has no licence, so nothing is
+  taken from it.
 
 ### Next review
 
-1. Run `git log 4eb6155d..origin/main` in a scratch clone outside the repo.
+1. Run `git log 3faac557..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -255,7 +315,7 @@ remaining candidates, both for M3, are the HLSL side of that translator and part
 layer (`crates/compat/d3d12_xs`) for `runtime/gpu`. The method map and other tables it measured
 on console OS binaries stay out (see "Not taken").
 
-**Last reviewed: commit `65ca6dd` (2026-11-22).** Upstream rewrote its history that day:
+**Last reviewed: commit `6e81ffc` (2026-11-23).** Upstream rewrote its history on 2026-11-22:
 `51f5319` is `ceb2b87` on the new `main`, the two trees differing in one redaction line of a
 publishing script.
 
@@ -268,7 +328,7 @@ publishing script.
 | 8,765 GTA VI mesh shaders | Checked: they are the 8,765 distinct containers among 9,282 mesh records, and they hold 8,291 distinct native programs. `shaderrecomp scan` now counts distinct containers and programs per stage, and the local `test_shader_census` holds the numbers | [shaders.md](shaders.md) |
 | The console's mesh-shader conventions: what v5 and s3 hold, the `GS_ALLOC_REQ` message and its m0 layout, export targets 12 to 15 and 20, and how primitive indices are packed | Partly checked: every distinct mesh program sends `GS_ALLOC_REQ` and exports a position and a primitive. Register contents and bit layouts are reported. Leonida reads v5 differently | [shaders.md](shaders.md) |
 | Root signature flag `0x01000000` forces memory-based root arguments, read through s[0:1]; the console requires it with amplification shaders, and WARP rejects it | Reported. The BVH builder's root signatures set it | [shaders.md](shaders.md) |
-| Translating through HLSL and DXC. About a third of a 4,000-shader GTA VI vertex sample translates, and mesh translation stops at the first resource load when there's no root signature | Reported. Its later notes count verified stages at 0 of 8 and call the 105,506-shader figure a DXC compile sweep, not checked output | [shaders.md](shaders.md) |
+| Translating through HLSL and DXC. About a third of a 4,000-shader GTA VI vertex sample translates, and mesh translation stops at the first resource load when there's no root signature | Reported. Its later notes count verified stages at 0 of 8 and call the 105,506-shader figure a DXC compile sweep, not checked output. At `6e81ffc` it has an optional root-signature inference and a user-data constant-buffer fallback for shaders without one, not run on GTA VI | [shaders.md](shaders.md) |
 | Every way of looking up a module or function has to be routed, including `GetProcAddressForCaller`, `LoadPackagedLibrary`, and ntdll's `Ldr*` lookups | Checked against our policy: an import without a rule becomes a logged stub, so none of them reaches the host. No side DLL imports them | [hle-status.md](hle-status.md) |
 | The console's `XMemAllocatePhysicalPages` enforces pool limits, and `XMemAlloc` carves page-pool allocations out of 512 KiB or 2 MiB granules (4 MiB on an older console OS) | Reported | Later: `runtime/imports/xmem`, once the main executable imports more than `XMemAlloc` and `XMemFree` |
 | A title reaches the Game Runtime by loading `xgameruntime.dll` by name, looking up `QueryApiImpl`, and calling services by interface ID and vtable slot | Partly checked: `XCurl.dll` and libHttpClient contain the strings `XGameRuntime`, `XGameRuntimeInitialize`, and `QueryApiImpl`. Our loader fails `LoadLibrary` for an unknown DLL, so `runtime/gdk` will need its own `xgameruntime.dll` behind that call | [hle-status.md](hle-status.md) |
@@ -282,7 +342,7 @@ publishing script.
 | `XUserFindUserByLocalId` returns `E_GAMEUSER_USER_NOT_FOUND` on the console, where the documentation says `ERROR_NOT_FOUND` | Reported | [hle-status.md](hle-status.md) |
 | `d3d12_xs` device parameters change with the console OS: 0x40 bytes at version 0x20002, 0x48 bytes at version 0x20004 | Reported. Checked here: `XCurl.dll` is version 2604.5.0.0, so the package was built with a 2026 GDK. Our wrapper will read the block by its version field | Later: `runtime/gpu` (M3) |
 | Path checks should be fuzzed with look-alike colons and slashes | Taken as a test: `test_io` checks that fullwidth, division, and fraction look-alikes stay ordinary name characters | [io.md](io.md) |
-| `XMemGetWin32HeapStatistics` on the process heap returns allocated bytes, then committed minus allocated, and a title subtracts their sum from its memory budget | Reported. No side DLL imports it | [hle-status.md](hle-status.md) |
+| `XMemGetWin32HeapStatistics` on the process heap returns allocated bytes, then committed minus allocated, and a title subtracts their sum from its memory budget | Reported. No side DLL imports it. At `6e81ffc` its figure counts only the title's own allocations | [hle-status.md](hle-status.md) |
 | The console accepts constant buffer views at 16-byte aligned addresses, where desktop D3D12 needs 256; root constant buffers can be bound as raw buffer views instead | Reported | [shaders.md](shaders.md) |
 | Console texture layouts include metadata planes that desktop sizes leave out: HTILE before depth and stencil for a single-mip depth texture, CMASK and FMASK for render targets. `GetResourceAllocationInfo` has to report the console's sizes, and `Map` works on a default-heap texture | Reported | Later: `runtime/gpu` and `memory_tracker` (M3) |
 | Vertex format 189 (`R10G10B10_SNORM_A2_UNORM`) is console-only and can be fetched as `R10G10B10A2_UNORM` with the signs restored in the shader | Reported | [shaders.md](shaders.md) |
@@ -292,20 +352,34 @@ publishing script.
 | BCPack BC1: the rANS entropy layer decodes exactly, checked against the silicon-rans tables and bcpack-rs's reference hashes. The block layer is fitted from samples, and chunks that use its unobserved or uncertain parts are refused, not guessed. No public mapping exists for BC2 to BC7 | Reported. Advances the BCPack rows above; GTA VI's BCPack pools are almost all BC1. We'd take bcpack-rs and silicon-rans (both MIT) from upstream | Later: `runtime/io` (M2–M3) |
 | DXC packs signature elements into one register only when their interpolation modes match, so a pixel input's non-default modifier (centroid, `nointerpolation`) has to be repeated on the output that feeds it, or pipeline creation fails with a linkage error | Reported, tested on WARP. Applies to GTA VI's flat inputs | Later: `shaderrecomp` (M3) |
 | The driver picks a shader's wave size, and AMD drivers can run pixel and compute shaders at 64 lanes, so two of the console's 32-lane waves can share one host wave. Lane-numbered operations (readlane, writelane, DPP row masks, EXECZ and VCCZ, GDS append counters) then have to address the guest wave's own half. Measured lane counts: RTX 5090 32, Intel UHD 770 16, WARP 4 | Reported; not yet run on 64-lane hardware. Matters for GTA VI's 32-lane programs | Later: `shaderrecomp` (M3) |
-| NVIDIA (RTX 5090): `floor`, `ceil` and `trunc` return 0x7FFFFFFF for NaN and flush denormal inputs even with denormals preserved; `log2` of a power of two can be 1 ulp off; a 16-bit clamp followed by a 0xFFFF mask becomes a saturating convert without the mask; `ldexp` chains with denormal results are reassociated to 0; pipeline creation fails with `E_OUTOFMEMORY` on f16 unordered compares behind an integer NaN guard and on `InterlockedAdd` of a negated operand | Reported | Later: `shaderrecomp` (M3) |
+| NVIDIA (RTX 5090): `floor`, `ceil` and `trunc` return 0x7FFFFFFF for NaN and flush denormal inputs even with denormals preserved; `log2` of a power of two can be 1 ulp off; a 16-bit clamp followed by a 0xFFFF mask becomes a saturating convert without the mask; `ldexp` chains with denormal results are reassociated to 0; pipeline creation fails with `E_OUTOFMEMORY` on f16 unordered compares behind an integer NaN guard and on `InterlockedAdd` of a negated operand. On an RTX 3080, an f16 FMA's NaN result comes back as 0x7FFF | Reported | Later: `shaderrecomp` (M3) |
 | The RTX 5090 quantises texture LOD to 1/256 steps, where WARP keeps float precision | Reported | Later: `shaderrecomp` (M3) |
 | A 1- or 2-byte load that fits in one dword must not read the next dword, which can lie outside the mapped GPU window | Reported, tested | Later: `shaderrecomp` (M3) |
-| A desktop texture can need more memory than the console's layout of it (a 2x MSAA depth texture, for one). Placed in a shared heap it then overlaps the title's next placement, so it gets its own heap covering only the title's range | Reported, tested on hardware. The console size in their test came from console SDK code, so the figure isn't taken | Later: `memory_tracker` (M3) |
-| Mesh shaders: the group dimensions must multiply to between 1 and 128, checked for overflow; amplification arguments need a strided zeroing loop when a group has fewer than 4 threads; a program that opens with a constant m0 and `GS_ALLOC_REQ`, with no branch after it, can keep its output counts per invocation | Reported, tested. How many GTA VI mesh programs open that way isn't counted yet | [shaders.md](shaders.md) |
+| A desktop texture can need more memory than the console's layout of it (a 2x MSAA depth texture, for one). Placed in a shared heap it then overlaps the title's next placement, so it gets its own heap covering only the title's range | Reported, tested on hardware. The console size in their test came from console SDK code, so the figure isn't taken. At `6e81ffc`, an MSAA texture at an offset that isn't a multiple of 4 MiB becomes a reserved resource tile-mapped onto the same heap range | Later: `memory_tracker` (M3) |
+| Mesh shaders: the group dimensions must multiply to between 1 and 128, checked for overflow; amplification arguments need a strided zeroing loop when a group has fewer than 4 threads; a program that opens with a constant m0 and `GS_ALLOC_REQ`, with no branch after it, can keep its output counts per invocation | Reported, tested. How many GTA VI mesh programs open that way isn't counted yet. At `6e81ffc`, groups of 129 to 256 threads run as two 128-thread passes; GTA VI's mesh groups are 128 threads by `PSV0`, so that part doesn't apply | [shaders.md](shaders.md) |
 | `XGameSaveReadBlobDataResult`'s buffer is the array of 24-byte blob records followed by the data; `XPersistentLocalStoragePromptUserForSpace` completes only with `S_OK` or `E_ABORT` | Reported; both follow from the public GDK | Later: `runtime/gdk` |
 | A hardware vertex shader gets the vertex index in v0 and the instance index in v3, below the fetched attributes from v4 | Checked here: the FSSM word at 0x2BC loads v0 to v3 in exactly the 494 VS programs that need the instance ID, and every VS program reads only VGPRs it loads | [shaders.md](shaders.md) |
 | Fetched attributes are packed by the elements the shader reads: each read element takes the next four VGPRs from v4, an unread one takes none, and missing components default to 0, 0, 0, 1 | Checked here for the packing: all 946 programs that call the fetch subroutine (788 VS, 158 ES) read exactly where it puts the elements their input signatures mark as read, from v4 in a VS and v9 in an ES. Our earlier 4 + 4*r* note fails in the 12 VS programs whose unread element precedes a read one, and is corrected. The default components aren't checked | [shaders.md](shaders.md) |
 | d16 typed-buffer conversions measured on RDNA 2 (gfx1036): normalized and scaled loads round once to nearest-even f16 and saturate at ±65504, and f32 loads round toward zero; stores round unorm to nearest even and snorm ties away from zero, and write the whole element with missing components 0 | Reported. Agrees with Leonida's single rounding | Later: `shaderrecomp` (M3) |
 | `ds_gws_init`, `ds_gws_sema_v` and `ds_gws_sema_br` lower to a counter in memory for straight-line 32-lane compute | Reported. **Contradicts** its earlier "no D3D12 counterpart" for GWS (above). Neither Leonida nor our decoder finds a GDS or GWS instruction in GTA VI's programs | [shaders.md](shaders.md) |
 | The D3D12.X layer has to copy a pipeline description's semantic-name strings and hold a reference on its root signature, because a title can free both once the pipeline exists (a use-after-free in Fortnite's derived pipelines) | Reported | Later: `runtime/gpu` (M3) |
+| Which interpolation attribute is which: attribute k is the k-th input register holding a value that isn't a system value, with layer and viewport registers after them; a channel with no element reads 0, w reads 1.0 | Reported, and a guess that still fails on one Trackmania shader. Byte 1 of our input records names the register, so we don't need it. Whether our kind-7 and kind-8 records hold the layer or viewport is unchecked | [shaders.md](shaders.md) |
+| A vertex stage puts the layer in bits 10:0 of the z dword of position export 13, and the viewport index in bits 19:16 | Reported, from register documentation, tested only on a shader it wrote | [shaders.md](shaders.md) |
+| The SMEM offset is a signed 21-bit value; its gfx1013 opcode table, built from LLVM's MC tests and AMD's MIT ISA XML | Checked here against our decoder, which read the offset unsigned, gave VOP3 names to 8 opcodes that exist only as VOP2 or VOP1, and named 8 MIMG slots as `gather4` `_d` forms that don't exist. Fixed in `2c8ae5b`; no census program uses an affected name. No code taken | `tools/shaderrecomp/src/rdna2*` |
+| f16 inline constants are the f16 value in the low half and zero in the high half, read as f32 bits by `v_pack_b32_f16` and `v_cvt_f32_f16`; OPSEL on a constant reads it again; 1/2π is 0x3118; packed int16 inline float constants are the 32-bit word | Reported, measured on an RX 6800 by Leonida | [shaders.md](shaders.md) |
+| Probes on gfx1036 (RDNA 2): NaN propagation with IEEE mode off, min and max by IEEE mode, `v_med3_f32` with a NaN operand, `s_bfe`'s 7-bit width and sign fill, norm conversions round to nearest with NaN as 0, the fused f16 FMAs (VOP2 0x36 to 0x38) return a signalling NaN unquieted | Reported | [shaders.md](shaders.md) |
+| Transcendentals bit-exact on gfx1036: f16 correctly rounded apart from about 20 sin and cos inputs; f32 `rcp`, `rsq` and `sqrt` faithful from a recovered datapath; f32 `log`, `exp`, `sin` and `cos` match AMD's rocjitsu models (MIT) | Reported. Its README and a commit message disagree on the exception count (20 against 18). Refines the gfx1031 row in Leonida's table | [shaders.md](shaders.md) |
+| A compute group of one wave may leave out `s_barrier`, so LDS accesses have to keep their order | Reported. Not counted in our programs yet | [shaders.md](shaders.md) |
+| `image_gather4_l` lowers to four `SampleLevel` taps, which ignore the sampler's bias and LOD clamp | Reported, tested on WARP | [shaders.md](shaders.md) |
+| 64-bit image atomics lower to `RWTexture<uint64_t>` on `R32G32_UINT`, gated on `AtomicInt64OnTypedResourceSupported` (OPTIONS9) and shader model 6.6 | Reported. 685 of our records use 64-bit atomics (checked) | [shaders.md](shaders.md) |
+| Desktop D3D12 refuses a mesh pipeline whose primitive topology is missing or undefined, so it has to come from `PSV0`'s mesh information | Reported, tested on a PC | [shaders.md](shaders.md) |
+| The console compiler merges root loads into 8- and 16-dword loads that run past the last parameter. Its root-signature inference starts geometry user SGPRs at s22 | Reported. **Conflicts:** Leonida and our register model put them from s8 | [shaders.md](shaders.md) |
+| Write-watch: views of physical pages or file mappings can't carry it, and on its Windows build the first read of a page never touched marks it dirty. fp16 and `R11G11B10_FLOAT` blending saturates a finite overflow | Reported, on WARP and its GPU | [d3d12x.md](d3d12x.md), [shaders.md](shaders.md) |
+| `XGameSave` calls on a closed handle return `E_GS_HANDLE_EXPIRED` (0x8083000D); it doesn't serve slots 30 to 32 (`XGameSaveFiles*`) | Reported | [hle-status.md](hle-status.md) |
 
-The word-scan and structural checks in these tables come from our own scratch scripts. They match AMD's public
-instruction encodings against the unpacked programs, and their output stays local.
+The word-scan and structural checks in these tables come from our own scratch scripts. They
+match AMD's public instruction encodings against the unpacked programs, and their output stays
+local.
 
 ### Not taken
 
@@ -337,6 +411,18 @@ instruction encodings against the unpacked programs, and their output stays loca
 * **Its geometry-shader adjacency inputs.** Where the extra vertex offsets sit is inferred from
   the first three's packing, not measured, and we haven't found where a GTA VI geometry program
   gets its VGPR count. We'd revisit it if one of the 195 takes adjacency.
+* **Newer online and console OS material** (`65ca6dd..6e81ffc`): `pixrt10` (an ETW controller
+  and kernel-driver IOCTLs), `netprofmsvc_c`, `net_guard` and `netview` (connectivity, WFP and
+  socket hooks), and the Trackmania online backend, all under rule 5; the console audio service,
+  `chad` and `xapu`; the texture-layout library's DCC oracle; its Game Runtime V7 dispatch and
+  pipeline subobjects 25 to 30; and XMem partitions read from an older console OS. Its reading of
+  indirect argument 107 as a mesh dispatch is a console enum it calls unverified.
+* **Code for later**, from the same range: its gfx1013 opcode table (`tests/isa_table`,
+  Apache-2.0 and MIT), as a name-table test, or regenerated by us from LLVM and AMD's XML; the
+  XTaskQueue and XAsync edge cases it lists against the PC Game Runtime, which we'd port from
+  libHttpClient's own MIT tests instead; the transcendental models, taking AMD's rocjitsu
+  headers (MIT) directly for `log`, `exp`, `sin` and `cos`; and its hardware-recorded test
+  vectors for VALU and image atomics.
 
 ### TomBox
 
@@ -350,7 +436,7 @@ same check first.
 
 ### Next review
 
-1. Run `git log 65ca6dd..origin/main` in a scratch clone outside the repo.
+1. Run `git log 6e81ffc..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `README.md`, `docs/BLOCKERS.md`, and `docs/DEVELOPMENT_LOG.md`. Look for
    GTA VI, and for console behaviour that every title shares.
 3. Add each new finding to the table above with its status here, check it when a design
@@ -370,7 +456,9 @@ licence to version 3 (`CLAUDE.md`), and nothing here needs its code. We wrote ou
 `g6::rpf9` and `rpfscan` ([rpf.md](rpf.md)), and our own pipeline cache parser,
 `shaderrecomp pscache` ([shaders.md](shaders.md)), from the layout it reports.
 
-**Last reviewed: commit `5f2726c` (2026-11-22).** No code has been copied.
+**Last reviewed: commit `5f2726c` (2026-11-22).** No code has been copied. On 2026-11-23 the
+repository was no longer reachable ("Repository not found"), so there was nothing new to
+review; the findings below stand as recorded.
 
 ### Taken
 
@@ -407,7 +495,8 @@ vertex fetch compiled in.
 
 ### Next review
 
-1. Run `git log 5f2726c..origin/master` in a scratch clone outside the repo.
+1. Check that the repository is reachable again, then run `git log 5f2726c..origin/master` in
+   a scratch clone outside the repo.
 2. Read the diff of `docs/RPF9.md`, its shader-cache code, and its format readers, as format
    facts only.
 3. Add each new finding to the table above with its status here, and move the "last reviewed"
@@ -431,7 +520,7 @@ understanding of the behaviour. We never translate its code. The permissive thir
 material it carries (AMD's ISA and addrlib tables, LLVM's test vectors) we take from upstream
 when we need it.
 
-**Last reviewed: commit `e80ce8d` (2026-11-22).** No code has been copied.
+**Last reviewed: commit `dd713e3` (2026-11-22).** No code has been copied.
 
 ### Taken
 
@@ -450,6 +539,15 @@ when we need it.
 | A branch beyond `s_branch`'s reach is `s_getpc_b64`, then `s_add_u32` and `s_addc_u32` of a constant, then `s_setpc_b64`: a direct jump, not an indirect one. 12 programs have them | Checked: our decoder follows them and finds 1,450 in 13 programs (57 in 8 shaders of the pipeline cache), every one landing on an instruction inside the code. The 983 programs left with unknown targets are the 788 VS fetch calls and the 195 ES programs, which end by jumping through a copy of s[6:7] | [shaders.md](shaders.md) |
 | `ds_swizzle_b32` picks its mode by offset: 0xE000 and up is FFT, 0xC000 and up rotate, 0x8000 and up quad permute, and below that the and, or and xor lane masks. 56 programs use 0x401F, which swaps the 16-lane halves | Reported; the split is AMD's RDNA 2 reference. Our register analysis doesn't depend on the mode | Later: `shaderrecomp` (M3) |
 | `XUserGetTokenAndSignatureAsync` fails with `0x80072EFD`, as on a console that can't reach Xbox Live, and titles then take their offline paths | Reported. It fits rule 5: our XUser will fail token requests the same way | Later: `runtime/gdk` |
+| Persistent local storage has to be a drive root such as `S:\`: Minecraft keeps only the drive letter of the path, and reads a failed or tiny free-space answer as a full disk | Reported, seen on Minecraft | [io.md](io.md) |
+| XDefiant uses `D:\` for its package drive | Reported. The planned pre-flight check of drive-letter strings now looks for `D:` too | [io.md](io.md), [execution-model.md](execution-model.md) |
+| Minecraft counts a gamepad as connected only once `XUserRegisterForDeviceAssociationChanged` reports it moving from no user to the local user, on the title's task queue | Reported | [hle-status.md](hle-status.md) |
+| Fortnite creates its window with `CreateWindowExW` from `ext-ms-win-rtcore-ntuser-window-l1-1-0`, so hiding a title's window has to cover the A and W forms | Reported | [hle-status.md](hle-status.md) |
+| After `s_wqm`, the first lane `v_readfirstlane` picks is often a helper lane on a primitive's edge, in another quad, and before shader model 6.7 a wave read of another quad's helper returns 0. The fix reads inside the lane's own quad first, then reads the wave from a live lane of that quad | Reported, seen on Minecraft. So `QuadReadLaneAt` alone isn't enough | [shaders.md](shaders.md) |
+| Float atomic min and max done as integer atomics pick the signed or unsigned path by comparing the bits with +inf's, since a float compare puts -0.0 on the wrong path; the f64 `_x2` forms map to 64-bit integer min and max | Reported, measured on an RX 7900 XTX | [shaders.md](shaders.md) |
+| A wave64 program split into two 32-lane halves breaks on `v_mbcnt` over a mask that isn't a constant, a VOP3 `v_cmp` into an SGPR pair, and 32-bit `s_bcnt`, `s_ff1` or `s_flbit` on one word of a mask | Reported, measured on an RTX 3080 | [shaders.md](shaders.md) |
+| A Ryzen 7000 integrated GPU (RDNA 2) runs wave64 but has no mesh shader tier, so stages translated to mesh shaders can't run there | Reported | [shaders.md](shaders.md) |
+| Vertex inputs the shader doesn't read take no fetch VGPRs | xcl now agrees with what we checked under xbox-emulator's row | [shaders.md](shaders.md) |
 
 **For `runtime/gpu` (M3).** Reported, and to be checked against GTA VI's own calls before a
 design depends on them:
@@ -459,7 +557,10 @@ design depends on them:
 | Console command lists: the title's inline code compares the list's write pointer (+0x18) with its end (+0x30), and calls the matching method when the record doesn't fit. So a list object whose buffer never has room turns every inline write into a method call | Checked here on `XboxBvhBuilder.dll`: 205 sites in 30 functions, each falling back to one method. Dispatch records compare with a second end at +0x28. The list object must still be at least 0x564 bytes of writable memory, since one field is written before the check. This removes the Leonida row's risk for the builder; the main executable still needs checking | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
 | Memory-based root arguments: s[0:1] points to a packed table in which a root constant takes 4 bytes, a root descriptor 8, and a descriptor table 4 (a 32-bit address). Compute root arguments fill user SGPRs s4 to s15 until one doesn't fit; it and all after it go to the table | Reported. The compute rule shows in the BVH builder's and FSR 4's code, which we have. Its graphics rule isn't taken (see "Not taken") | Later: `runtime/gpu` (M3) |
 | Console descriptors: a view slot is 32 bytes and a sampler slot 16, and descriptor table addresses have a zero high half. Titles copy descriptors as plain memory, so all console view heaps have to live in one shader-visible desktop heap | Reported. Fits Leonida's 32-bit descriptor pointers and Xbox2Windows's 32-byte entries ([shaders.md](shaders.md)) | Later: `runtime/gpu` (M3) |
-| Method slots: device extensions start at slot 44 and command-list extensions at 60, and list slots 28 to 55 are shifted from desktop. `PresentX` is queue slot 30, `SignalX` queue slot 23, and the frame clock device slots 78 to 81 | Reported, mostly observed on Fortnite, an older GDK. **Conflicts:** xcl keeps `ExecuteIndirect` at slot 59 where Leonida says 61, and xcl's own notes give list slot 85 two meanings. **Partly checked** on the BVH builder: desktop compute root slots 29 to 41 sit four higher, while `Dispatch` (14), `SetPipelineState` (25) and `ResourceBarrier` (26) don't move. The builder never calls `ExecuteIndirect`, but the upscaler settles it at 61, against xcl's 59 | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
+| Method slots: device extensions start at slot 44 and command-list extensions at 60, and list slots 28 to 55 are shifted from desktop. `PresentX` is queue slot 30, `SignalX` queue slot 23, and the frame clock device slots 78 to 81 | Reported, mostly observed on Fortnite, an older GDK. **Conflicts:** xcl keeps `ExecuteIndirect` at slot 59 where Leonida says 61, and xcl's own notes give list slot 85 two meanings. **Partly checked** on the BVH builder: desktop compute root slots 29 to 41 sit four higher, while `Dispatch` (14), `SetPipelineState` (25) and `ResourceBarrier` (26) don't move. The builder never calls `ExecuteIndirect`, but the upscaler settles it at 61, against xcl's 59. Queue slots 23 and 30 belong to the older runtime layout (next row) | [d3d12x.md](d3d12x.md); later `runtime/gpu` (M3) |
+| A newer console runtime reports the same SDK version, 0x20004, but moves slots: two more queue methods before `Signal`, so `SignalX` is 25 and `PresentX` 32, and the list's console methods from `CopyTextureRegionX` on sit two slots later. The device is unchanged | Reported, seen on Unicorn Overlord. Which layout GTA VI uses shows in the executable's queue calls | [d3d12x.md](d3d12x.md) |
+| Unified memory on XDefiant: a first graphics reservation of 8 GiB + 4 MiB; a write-watch scan of about 2 GB costs about 0.8 ms per submission; only the 64-byte chunks the CPU changed may be uploaded; sync at `ExecuteCommandLists`, since titles fill vertex rings after recording; address 0 and the 32-bit descriptor range stay out of title reservations | Reported, measured | [d3d12x.md](d3d12x.md); later `memory_tracker` (M3) |
+| A committed console resource that isn't placed needs a desktop description, or creation fails with `E_INVALIDARG`; the console-only state bit 0x100000 has to be masked | Reported, seen on Fortnite, Unicorn Overlord and Minecraft | [d3d12x.md](d3d12x.md) |
 | Methods that return a struct use the plain C convention on the console: small results come back in RAX, and larger ones pass the return buffer before `this` | Reported. Fits Leonida's finding that the heap start-handle getters return in RAX | Later: `runtime/gpu` (M3) |
 | The console's `D3D12_FEATURE_DATA_D3D12_OPTIONS` is 0x40 bytes (0x3C on desktop), and the console resource description has fields beyond +44 | Reported | Later: `runtime/gpu` (M3) |
 | `OpenExistingHeapFromAddress` needs a fully committed allocation smaller than 4 GiB (4,095 MiB works, exactly 4 GiB doesn't). Placeholder reservations replaced by committed sections can each be opened as a heap. Write-watch works on such memory. Mapping tiles onto heaps opened from a file mapping removed the device | Reported, measured on Windows 11 with an RX 9070 | Later: `memory_tracker` (M3) |
@@ -470,13 +571,21 @@ design depends on them:
 | A title sizes its back buffer from its window's client area, so the window has to look like the console's screen: frameless, 1920x1080, its client area the whole window. On an ordinary overlapped window the client area came out 1904x1041, the title resolved 1920x1080 into it, and the device was removed | Reported, seen on Minecraft | Later: `runtime/gpu` and the window HLE (M3) |
 | The console accepts the vertex-and-constant-buffer and index-buffer states on textures, as part of a generic-read combination; desktop D3D12 then fails to close the list, so those bits have to be dropped for anything but buffers | Reported, seen on Minecraft | Later: `runtime/gpu` (M3) |
 | A GPU address the title passes is translated only when it lies in the title's own memory: a desktop resource's GPU address can fall in one of the title's ranges by number | Reported, seen on Minecraft | Later: `memory_tracker` (M3) |
-| Buffers placed in the title's heaps have to live in unified memory, because console code reads root constant buffers and buffer descriptors from it. Backing each heap when its first buffer is placed fits; backing every heap up front used up 2 GiB | Reported, seen on Minecraft | Later: `memory_tracker` (M3) |
+| Buffers placed in the title's heaps have to live in unified memory, because console code reads root constant buffers and buffer descriptors from it. Backing each heap when its first buffer is placed fits; backing every heap up front used up 2 GiB | Reported, seen on Minecraft. **Superseded** at `dd713e3`: title graphics memory lives in 4 GiB reserved buffers whose tiles are mapped as it is committed, plus a 512 MB coherent window for readback ([d3d12x.md](d3d12x.md)) | Later: `memory_tracker` (M3) |
 | `VirtualFree` has to tell the sparse-tile tracking before it decommits, and uncommitted pages inside a mapped tile are holes: never read, their video memory zeroed | Reported, seen on XDefiant | Later: `memory_tracker` and `runtime/kernel` (M3) |
 | An empty sampler slot holds the console's zero sampler: point filtering, wrap, mip 0 | Reported | Later: `runtime/gpu` (M3) |
 | The driver links pixel inputs by register, so a pixel shader that declares only the inputs it reads is refused; every input has to be declared | Reported | Later: `shaderrecomp` (M3) |
 
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".
+
+**Ideas to reimplement ourselves** (`e80ce8d..dd713e3`): hardware-breakpoint call probes and
+write watchpoints armed on every thread, new threads arming themselves, for debugging guest code
+without patching it; an arena for per-draw data in place of 64 KiB allocations; one DXC compile
+at a time when little commit memory is left, with a report of cache hits, misses and the first
+distinct errors; and decoding XML character references in `MicrosoftGame.config` once we parse
+it. It tells the two runtime layouts apart from behaviour; since we pin one build, a per-build
+setting is simpler.
 
 ### Not taken
 
@@ -488,16 +597,17 @@ affect translation".
   compiler, which is where its graphics root-argument rule comes from. They compare against the
   console's texture-layout library (pipe configuration, metadata planes). Its notes include
   system-partition research. Console SDK material stays out of the repo.
-* **Its asset tools:** the texture-pool viewer's exports, `rpf.rs --extract`, and its shader
-  dumps.
+* **Its asset tools:** `rpf.rs --extract` and its shader dumps. Its texture-pool viewer is
+  gone upstream since `7396683`.
 * **Game shader names and disassembly** in its notes and tests.
-* **Its XNetworking review documents.** Hard rule 5.
+* **Its XNetworking review documents** and the `CERT_CHAIN_CONTEXT` offsets it added for
+  XNetworking. Hard rule 5.
 * **Its tooling changes** (launcher configuration, RPF probe options, shader tool output,
   disassembler byte ranges, the manifest storage quota). They carry no new facts.
 
 ### Next review
 
-1. Run `git log e80ce8d..origin/main` in a scratch clone outside the repo.
+1. Run `git log dd713e3..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `HANDOFF.md` and `docs/specs/` for facts, written up in our own words.
 3. Add each new finding to the tables above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.

@@ -119,6 +119,16 @@ The whole scan took about seven minutes here, 263 s of it on `levels.rpf`.
     * the Adler-32 of only the first 64 KiB;
     * CRC-32.
   * Another 112 zlib-headed gaps in `data.rpf` aren't DEFLATE at all.
+  * **Reported** by Leonida: `data.rpf` has 377 ranges that no stream covers and that aren't
+    zero, 20,268,240 bytes in all (4.2%). 278 of them measure at least 7.5 bits of entropy per
+    byte, so they look compressed or encrypted.
+* **Resource boundaries** (reported by Leonida, not checked here):
+  * Streams aren't always 4 KiB-aligned. Our scan tries every 16-byte boundary, so this
+    doesn't affect it.
+  * A resource's system part ends at the first stream whose inflated size is a multiple of
+    64 KiB, plus at most one more stream. That bears on the merged-files limit above.
+  * `core_bvh4.rpf` has 43 streams of exactly 8 MiB, each a chunk head followed by a
+    continuation stream.
 * **The first gap.** What lies between the data area's start and the first file.
 * **Compression.** Whether any archive data uses a format besides zlib that console hardware
   decompresses. The carve sees zlib and stored data only, and it would report anything else as

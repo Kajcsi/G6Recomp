@@ -28,14 +28,49 @@ be checked when it is built:
   that type's failure value, not `E_NOTIMPL`.
 * `XUserFindUserByLocalId` returns `E_GAMEUSER_USER_NOT_FOUND` on the console, where the
   documentation says `ERROR_NOT_FOUND`. Follow the console.
+* **Assumption** (Leonida): the main executable reaches the Game Runtime only through the
+  `xgameruntime.lib` thunks, `QueryApiImpl` and then a vtable slot, not through named imports.
+  So `runtime/gdk` is organised by interface ID and vtable, with each method at its slot.
+  * Leonida's static scan finds 16 thunks in `XCurl.dll`, all of them called, and 404 in
+    libHttpClient, of which it calls 15, all in `XThreadingImpl` and `XErrorImpl`.
+  * The public layouts lack two interface IDs: one for `XGameSaveImpl` slots 33 to 49 and one
+    for `XGameStreamingImpl` slots 3 to 6.
+  * The two public layout sources, xgameruntime-docs and the Wine IDL in
+    xodus-gaming/xgameruntime, disagree where the documentation has an "unknown" slot: the IDL
+    leaves it out, so every later method sits one slot early there.
+    `XUserImpl` slot 15 and `XDisplayImpl` slot 3 are such slots.
+* More functions whose real return type isn't HRESULT (Leonida): `XErrorSetOptions` and
+  `XSystemAllowFullDownloadBandwidth` return nothing, `XSystemIsHandleValid` returns `bool`,
+  and `XErrorReport` does return HRESULT. `XThreadingImpl` slot 8 fails rather than returning
+  `S_OK`.
+* `XGameSave` calls on a closed handle return `E_GS_HANDLE_EXPIRED` (0x8083000D)
+  (xbox-emulator).
+* `XStore` sizes, unverified (Leonida): `STORE_SKU_ID_SIZE` 18 and `SKU_ID_SIZE` 5, which make
+  `XStoreGameLicense` 104 bytes. Check them against the executable's use before relying on
+  them.
+* `XUserRegisterForDeviceAssociationChanged` (xcl, on Minecraft): the title treats a gamepad as
+  connected only after the callback reports it moving from no user to the local user, and the
+  callback runs on the title's task queue. Our single offline user gets the same transition.
+* A title's window: Fortnite creates it with `CreateWindowExW` from
+  `ext-ms-win-rtcore-ntuser-window-l1-1-0` (xcl), so the window HLE covers both the A and W
+  forms.
+
+Notes for `runtime/kernel`:
+
+* `VirtualAlloc` on the console takes memory-type bits that desktop Windows refuses.
+  **Checked here** (Windows 11 26200): `MEM_GRAPHICS` (0x10000000) and `MEM_TITLE`
+  (0x40000000) each make the call fail with `ERROR_INVALID_PARAMETER`, with or without
+  `MEM_RESERVE`. Leonida reported the bit values and drops both. Here `MEM_GRAPHICS` memory is
+  GPU-visible, so it goes through `memory_tracker`, and `MEM_TITLE` is dropped. No side DLL
+  imports `api-ms-win-core-memory-*`, so the family is unbound until the executable needs it.
 
 So far there is the loader's own HLE, and `runtime/imports` with the default import policy
 (`default_game_policy()`), xmem, COM and WinRT activation, and the path functions on
 `runtime/io`. `runtime/gdk` doesn't exist yet.
 The rows below cover what the side DLLs import ([side-dlls.md](side-dlls.md)). The networking
 libraries are never mapped: the game's imports from them bind to offline implementations. The
-full list comes from the main executable: `x64recomp imports <exe>` gives the starting list. Read it locally and don't paste it here
-wholesale; add rows as each import gets a shim.
+full list comes from the main executable: `x64recomp imports <exe>` gives the starting list.
+Read it locally and don't paste it here wholesale; add rows as each import gets a shim.
 
 ## runtime/loader
 

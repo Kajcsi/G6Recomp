@@ -121,6 +121,12 @@ probably uses more of it.
   stay stubs until something we map calls them. **Reported:** the upscaler treats a failed
   statistics call as zero, so a stub is safe there.
 
+**Bink under a native loader.** **Reported** by Leonida: `Bink2Scarlett.dll` decodes in place
+with only its two xmem imports bound to a shim. All 515 movies decode their first two frames,
+and all 229 audio tracks give PCM. `BinkSetFileOffset` with open flag 0x20 plays a movie
+straight from `movies.rpf` at its offset, so nothing is extracted. That makes a local `game`
+test of our loader and xmem possible: decode one frame of a movie read through `runtime/io`.
+
 ## Replaced DLLs
 
 A replaced DLL is one the loader must never map from the search path, even though the file is

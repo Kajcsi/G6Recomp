@@ -39,14 +39,22 @@ desktop DXR builds rather than translate these shaders.
   pair `0x03000000` marks a root signature internal to XDXR, the console's DXR layer.
   vkd3d-proton accepts the pair; Microsoft's D3D12 refuses each bit on its own (Xbox2Windows).
 * **Reported** (Leonida): it counts 53 containers where we count 52, and describes the layout
-  of the builder's batched build descriptor.
+  of the builder's batched build descriptor. The container it counted twice is the one for
+  `GetBVHCompactedSize`, created at the 47th and 53rd creations. Its translator now handles 51
+  of the 52 programs.
 * **Risk, reported** (Leonida): `core_bvh4.rpf` holds about 272,000 prebuilt bottom-level
   acceleration structures in the console's node format (64-byte nodes, version 6), with no
   source geometry. The builder's exported class has a rehydrate method
   ([side-dlls.md](side-dlls.md)), which fits a game that loads those structures rather than
-  building them. Then a desktop DXR build has nothing to build from, and the ray-traced passes would need the console format kept and
-  intersected in software instead (see "Ray tracing" below). Check what the game does with
-  that archive before M3 commits to either.
+  building them. Then a desktop DXR build has nothing to build from, and the ray-traced passes
+  would need the console format kept and intersected in software instead (see "Ray tracing"
+  below). Check what the game does with that archive before M3 commits to either.
+* **Reported** (Leonida, later): those dehydrated structures hold primitive references only;
+  the triangles come from the drawables in `levels.rpf`. The rehydrate method runs on the CPU
+  and makes no device calls. A structure's size field means a total of 64·(field+1) bytes.
+  Destinations must lie below 2^40 and be 256-byte aligned, and the builder reads geometry
+  descriptors with CPU loads. So the geometry does exist, which weakens the risk above.
+  Whether the game takes the rehydrate path is still open.
 
 ### amd_fidelityfx_upscaler_xbox
 
@@ -60,6 +68,12 @@ desktop DXR builds rather than translate these shaders.
 
 With no DXIL, there is nothing to translate here. The plan in [side-dlls.md](side-dlls.md)
 provides the FidelityFX API from the public PC FidelityFX SDK instead.
+
+* **Reported** (Leonida, from these 29 programs, which carry both a root signature and their
+  `COMPUTE_PGM_RSRC2`): the user SGPR count is 4 + one per descriptor table + two per root
+  CBV, in signature order. s0 to s3 are a driver prefix, and tables are 32-bit pointers from
+  s4. That is the only place in the package where a root signature and its native program sit
+  side by side.
 
 ## Scene shaders (`shaders.rpf`)
 
@@ -320,6 +334,8 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
   * The API stage is 0 for vertex, 1 for pixel, 2 for geometry (both of its records), 3 for
     compute, and 6 for mesh. ES and VS records of vertex shaders say 0.
   * Leonida: the position's w component holds 1/w, as on desktop AMD hardware.
+  * Leonida, later: the FSSM word at 0xFC, just before the records, isn't a render-target
+    count. It is 5 or 6 in some programs and 16 or 18 in others. The count comes from `OSG1`.
   * **Layout word.** xcl reports that the FSSM word at byte 0x10 says where the stage tables
     below sit: 5 or 6 in the titles it ran, with the tables 8 bytes later under 6. **Checked
     here:** all 26,698 programs in 1.0.2.1 say 6, and the offsets below are those of layout 6
@@ -344,6 +360,36 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
     `v_interp_mov_f32` (a flat input) and bit 1 one it reads with `v_interp_p1`/`p2` or their f16
     forms. They give the read method, not the D3D interpolation mode. Bits 3 and 4 mark f16
     inputs. The table sometimes lists positions the code never reads (775 shaders).
+  * **How the interpolation unit reads its parameters** (Leonida, measured on gfx1035 and
+    gfx1036 with parameter words a compute wave wrote, not a real draw's setup):
+    * Attribute N takes 48 bytes from M0 + 48N. For channel c, P0 and P10 sit at +8c and
+      +8c+4, and P20 at +32+4c.
+    * The f32 `mov`, `p1` and `p2` forms read a packed channel's raw dword as f32, with no
+      unpacking.
+    * `v_interp_p1ll_f16` widens the selected half (the `high` bit picks bits 31:16) and does
+      one fma rounded to f32. `v_interp_p1lv_f16` takes P0's half from its third source.
+    * `v_interp_p2_f16` rounds once, straight to f16, by the f16 rounding field of MODE. It
+      writes bits 15:0 and keeps the destination's high half. Denormal halves survive, and NaN
+      halves are quieted with their payload kept.
+    * What a real draw's interpolation setup writes for a packed channel is still open there.
+      On D3D12, the per-vertex equivalent is a `nointerpolation` input read with
+      `GetAttributeAtVertex`, plus `SV_Barycentrics`.
+  * **The f16 forms are VOP3** (Leonida, from LLVM's encoding for gfx1013): the attribute is in
+    bits 0 to 5 of the first source field, the channel in bits 6 and 7, and `high` in bit 8.
+    p1ll and p2 always agree on attribute, channel and `high`, and 4,731 of the 4,776 programs
+    that use `high` read both halves of the same channel. xbox-emulator and xcl decode only
+    the attribute and channel, and xcl never reads bit 8.
+  * **Which attribute is which** (xbox-emulator, a guess that still fails on one Trackmania
+    shader): attribute k is the k-th input register holding a value that isn't a system value.
+    A register counts if any element in it is read, even a system value that shares it.
+    Registers holding `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex` come after, so a
+    shader that reads only the layer reads it as attr0. A channel with no signature element
+    reads 0, except w, which reads 1.0. Byte 1 of our records names the register directly, so
+    we don't need the guess. Whether our 32 kind-7 pixel records, and the 29 kind-7 and 2
+    kind-8 vertex output records, are layer or viewport values is unchecked.
+  * xbox-emulator also reports where a vertex stage puts those two values: the layer in bits
+    10:0 of the z dword of position export 13, and the viewport index in bits 19:16. It took
+    this from register documentation and tested it only on a shader it wrote.
   * **Vertex output table** (`fssm_vs_output_table`). **Checked here:** an image that names a
     legacy VS stage has a table of 6-byte records from offset 0x1DC, one per `exp param N` the
     code writes. The word at 0x29C holds their number. All 2,431 such programs have one: the
@@ -479,6 +525,18 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
     the 565, the shader loads the descriptor at byte 0 of the s9 table and then reads four
     dwords at bytes 16 to 28 through it. The `PSV0` resource declarations vary between those
     shaders and don't give the original HLSL register or space.
+  * Xbox2Windows, tracing 4,411 pixel records: 4,099 read four or more descriptors through
+    `s_buffer_load` (up to 32), and 311 read one to three. 3,711 use three entry registers, 606
+    two, and 93 one. The trace stops at an entry SGPR nothing has set in 1,553 records, and at a
+    16-byte descriptor no `s_buffer_load` reads (probably a V#) in 582.
+  * Leonida's heap-index census: 99.86% of 770,412 descriptor loads take their base from a
+    wave-start SGPR used as a 32-bit pointer. The resource heap and the sampler heap each have
+    their own base, and the stride is compiled in: T# offsets are multiples of 32, S# offsets
+    multiples of 16.
+  * xbox-emulator: the console compiler merges root loads into 8- and 16-dword loads that run
+    past the last parameter, so the block a translation reads root arguments from needs slack
+    after it. Its optional root-signature inference starts geometry user SGPRs at s22, where
+    Leonida and our register model ("Setup words" above) put them from s8.
   * Since no container carries a root signature (checked above), xbox-emulator's translator
     stops at the first resource load in 8,749 of the mesh shaders it tried.
   * It stops 16 more at a wave-reduction prologue it doesn't handle yet.
@@ -493,11 +551,23 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
     Other stages set it only to nearest even: 571 compute, 595 mesh, and 85 vertex programs.
   * So f16 results in those pixel shaders round toward zero from that point on. Xbox2Windows
     reported a pixel shader that exports binary16 rounded toward zero.
+  * **Checked here (decoder):** the mode is there for packed f16 interpolation and nothing
+    else. The 4,776 are exactly the pixel programs whose f16 interpolations read a high half
+    (see "Pixel input table") and whose input table has a record with flag bit 4. In every
+    one, the first toward-zero write comes before the first f16 interpolation. In program
+    order, no 16-bit instruction that rounds, other than `v_interp_p2_f16`, runs while the
+    field holds toward zero. Xbox2Windows found the same over 4,187 records. So a translation
+    rounds `v_interp_p2_f16` results toward zero and can treat the rest of the program as
+    round-to-nearest. 21 more pixel programs have a bit-4 record but neither the mode change
+    nor a high-half read.
   * The scan also finds 19 words that would be `s_setreg_b32` of the f32 rounding field, in 11
     compute and 2 pixel programs. A word scan can't tell whether those are instructions.
   * 8,317 of the 9,282 mesh shaders, and 4,424 shaders of other stages, set hardware registers
-    20 and 21, which LLVM names `FLAT_SCR_LO` and `FLAT_SCR_HI`, to 0 and 1024. What that
-    scratch setup means hasn't been worked out.
+    20 and 21, which LLVM names `FLAT_SCR_LO` and `FLAT_SCR_HI`, to 0 and 1024. **Checked
+    here (decoder):** none of those 12,741 programs (8,317 mesh, 2,249 pixel, 1,225 compute,
+    876 plain vertex, and 37 two-program vertex shaders in both their ES and VS programs)
+    contains a scratch or flat instruction, so the writes have no effect and a translation
+    drops them. Xbox2Windows reported the same for 2,011 pixel records.
 * **Features in `SFI0`.** **Checked here:** 685 records use 64-bit atomics, all on typed
   resources; 30 use tiled resources; 10 use rasterizer-ordered views; 18,227 index descriptor
   heaps directly. The first three match Leonida's counts.
@@ -566,7 +636,9 @@ translation depends on it.
 * **16-bit results.** On GFX10, f16 ALU instructions (VOP1 and VOP2, `v_cvt_f16_f32` included)
   and the VOP3 instructions that take `op_sel` write only the low half of the destination and
   keep the high half. The VOP2 16-bit integer instructions define the whole register. Leonida
-  takes this from Mesa's ACO compiler and Xbox2Windows from LLVM.
+  takes this from Mesa's ACO compiler and Xbox2Windows from LLVM. Xbox2Windows now marks it
+  unmeasured, `v_cvt_f16_f32` included, so treat it as an assumption until a GPU test settles
+  it. Leonida measured one case: an SDWA result with `dst_sel:DWORD` zeroes the high half.
 * **Narrowing to f16** rounds to nearest even unless the f16 rounding field says toward zero
   (above). Leonida does it in integer arithmetic because AMD's drivers lower GLSL's
   `PackHalf2x16` to a round-toward-zero conversion. About half of the unorm8 values its d16
@@ -588,6 +660,60 @@ translation depends on it.
 * **Vertex format 189,** `R10G10B10_SNORM_A2_UNORM`, exists only on the console.
   xbox-emulator fetches it as `R10G10B10A2_UNORM` and restores the signs in the vertex shader.
   That is exact for vertex fetch, but not for anything that filters the raw bits.
+* **gfx1013 is not gfx103x** (Leonida, from an llvm-mc sweep of every opcode). Only gfx1013 has
+  `v_mad_f32`, `v_mac_f32` and their `_legacy` forms, `v_mul_lo_i32` as VOP3 0x16B,
+  `s_get_waveid_in_workgroup`, scalar stores, atomics and scratch, `s_dcache_wb` and
+  `s_dcache_discard`, and the 31 `ds_*_src2_*` forms. VOP2 0x06 and VOP3 0x106 and 0x140 decode
+  as fused legacy instructions on gfx103x. So a listing made for the wrong target misreads them.
+  **Checked here:** compared against xbox-emulator's gfx1013 table built from LLVM and AMD's
+  reference, our names have no conflict. That comparison found three decoder errors, now fixed:
+  the SMEM offset is signed, eight VOP2- or VOP1-only opcodes had VOP3 names, and gather4 has no
+  `_d` forms.
+* **`v_mad_f32`, `v_mac_f32` and `v_mad_legacy_f32`** flush denormal operands, products and
+  sums whatever MODE says, before and after the output modifier (Leonida on gfx1010,
+  xbox-emulator on gfx1010 too). Leonida counts 9,297 shaders that use at least one of them.
+* **f16 inline constants** (RX 6800, via Leonida and xbox-emulator): the constant's f16 value
+  in the low half and zero in the high half. `v_pack_b32_f16` and `v_cvt_f32_f16` read the f32
+  bits instead. OPSEL on a constant reads the constant again, and 1/2π is 0x3118. Packed
+  16-bit integer instructions read a float constant as the whole 32-bit word.
+* **NaN handling** (gfx1036 probes, via xbox-emulator):
+  * With IEEE mode off, the first NaN operand passes through unchanged.
+  * An invalid operation without a NaN operand gives 0xFFC00000, and an fma whose product is
+    invalid gives that value even when the addend is a NaN.
+  * `v_sub` negates its second source first.
+  * min and max NaN rules depend on IEEE mode.
+  * `v_med3_f32` with a NaN operand gives the minimum of the other two (from the ISA and
+    gfx1030).
+  * The fused f16 FMAs (VOP2 0x36 to 0x38) return a signalling NaN unquieted with IEEE off.
+* **Conversions.** `v_cvt_pknorm_*` rounds the exact product once to nearest and turns NaN into
+  0. d16 image loads of 32-bit integer texels saturate. `v_pk_mad` with clamp saturates.
+* **`s_bfe`** takes a 7-bit width, sign-fills signed fields, and sets SCC when the result isn't
+  zero (gfx1036).
+* **Transcendentals** (gfx1036, bit-exact models published by xbox-emulator): the f16 forms
+  are correctly rounded except about 20 sin and cos inputs near a midpoint. The f32 `rcp`,
+  `rsq` and `sqrt` are faithfully rounded, and the f64 forms return the unit's unrounded
+  value. The f32 `log`, `exp`, `sin` and `cos` match AMD's MIT-licensed rocjitsu models.
+* **Buffer bounds** follow Mesa's GFX11 column for each `OOB_SELECT`, not its GFX10 one
+  (Leonida, on gfx1036 and gfx1011). In raw mode, soffset counts toward the check.
+* **Samplers.**
+  * The point mip filter picks floor(λ+0.5), so an exact half rounds up (Leonida, gfx1036).
+    The T#'s `MIN_LOD` clamps the fractional LOD before that rounding, counting from the
+    resource's level 0.
+  * An S#'s compare function is word 0 bits 14:12, in `D3D12_COMPARISON_FUNC` order minus
+    one. `TRUNC_COORD` is word 0 bit 27: set, the coordinate rounds down; clear, it rounds to
+    nearest even at 6 fraction bits (Xbox2Windows, 104 draws on an RTX 3070 and WARP).
+  * `image_get_resinfo` gives depth 0 for 2D and minified array layers (Leonida). Past the
+    last level it gives size 0 but keeps the level count (xbox-emulator).
+  * `image_gather4_l` lowers to four `SampleLevel` taps, which ignore the sampler's bias and
+    LOD clamp (xbox-emulator, on WARP).
+* **Helper lanes** (Leonida, RADV on gfx1036, wave64): EXEC at entry holds only covered pixels.
+  `s_wqm` turns on whole quads, and lane order within a quad is (x&1) + 2(y&1). A helper's v0
+  and v1 already hold its own I/J before `s_wqm`.
+* **Float atomic min and max done as integer atomics** (xcl, RX 7900 XTX): pick the signed or
+  unsigned path by comparing the bits with +inf's, not with a float compare, since -0.0 ≥ 0 is
+  true. The f64 `_x2` forms map onto 64-bit integer min and max.
+* **Groups of one wave may leave out `s_barrier`** (xbox-emulator), so a translation that runs
+  such a group as several host waves has to keep their LDS accesses in order.
 
 ## Host constraints that affect translation
 
@@ -597,8 +723,39 @@ translation depends on it.
     shared memory) passes ballot, prefix-count, and lane-read tests on NVIDIA and WARP.
   * **Reported:** native wave64 passes on five Radeon GPUs, RDNA 2 and RDNA 4. RDNA 2 runs 32
     lanes unless a shader asks for 64; RDNA 4 defaults to 64.
+  * **Reported** by Xbox2Windows: Intel HD 530 and UHD GPUs report 16 lanes, and WARP 4.
+  * **Reported** by xcl (RTX 3080): a wave64 program split into two 32-lane halves breaks on
+    `v_mbcnt` over a mask that isn't a constant (lanes 32 to 63 undercount), on a VOP3 `v_cmp`
+    that writes an SGPR pair, and on 32-bit `s_bcnt`, `s_ff1` or `s_flbit` applied to one word
+    of a mask. Each of these has to see the whole 64-lane mask.
   * A translator has to know which shaders depend on the wave width. Each program's setup word
     gives the width it was compiled for (see "Wave size" above).
+* **Mesh shaders.** **Reported** by xcl: a Ryzen 7000 integrated GPU (RDNA 2) runs wave64 but
+  has no mesh shader tier, so mesh programs need another path there.
+  * **Reported** by xbox-emulator: desktop D3D12 rejects a mesh pipeline whose primitive
+    topology is missing or undefined, so the translation fills it from the mesh information in
+    `PSV0`.
+  * **Reported** by Xbox2Windows: WARP 10.0.26100.9818 removes the device for a mesh pipeline
+    without a pixel shader.
+* **Feature levels on likely hosts** (Xbox2Windows): an RX 570 on vkd3d-proton exposes shader
+  model 6.6, a GTX 1060 runs DXR tier 1.0, and the in-box WARP of Windows 10 19041 has no DXR.
+* **64-bit image atomics.** **Reported** by xbox-emulator: `RWTexture<uint64_t>` on an
+  `R32G32_UINT` texture, which needs shader model 6.6 and
+  `AtomicInt64OnTypedResourceSupported` from `D3D12_FEATURE_DATA_D3D12_OPTIONS9`. 685 of our
+  records use 64-bit atomics on typed resources (see `SFI0` above).
+* **Interpolation precision.** **Reported** by Xbox2Windows: on an RTX 3070, 133 of 276
+  interpolated values came out one or two f32 ulps low, and rounding them toward zero to f16
+  then changed the output at 17 pixels. WARP was exact. So the host's interpolation can differ
+  by an ulp before the translation's f16 rounding.
+* **Sampling.**
+  * **Reported** by Xbox2Windows: the `MinLod` blend weight is quantized to 1/256. WARP 1.0.22
+    rounds it, and an RTX 3080 Ti truncates it.
+  * **Reported** by Xbox2Windows (GTX 1060, WARP): a sampler used both for comparison and for
+    ordinary sampling needs two host samplers.
+* **Blending.** **Reported** by xbox-emulator: fp16 and `R11G11B10_FLOAT` blending saturates a
+  finite overflow on WARP and on its GPU.
+* **f16 NaN.** **Reported** by xbox-emulator: an RTX 3080 returns 0x7FFF for an f16 FMA whose
+  result is a NaN.
 * **Shared-exponent UAVs.** **Reported:** typed UAV stores to `R9G9B9E5_SHAREDEXP` work on
   WARP but not on an NVIDIA driver. A translated shader that writes that format through a UAV
   needs a fallback, such as an `R32_UINT` view with the packing done in the shader.
@@ -620,6 +777,10 @@ translation depends on it.
   1.6 to 3 s in DXC and 0.4 to 1.9 s in the driver. It hands the title a placeholder pipeline
   that draws nothing and finishes any pipeline not ready within 12 ms on a worker thread. It
   doesn't use `ID3D12PipelineLibrary` yet, so the driver's part recurs on every run.
+  * **Reported** by Xbox2Windows (Ryzen 5 5500, DXC 1.9.2609.5): in a shader with 8,192
+    sample branches, DXC's GVN pass takes 82% of the pass time. `-Od` cuts the wall time by 84%
+    there and by more than 95% at 16,384. A 2.77 MB DXIL pipeline didn't finish creation within
+    about 9 minutes on an RTX 4060.
 * **Branches in generated HLSL.** **Reported** by xcl: in HLSL 2021, `?:`, `&&`, and `||` on
   scalars short-circuit, so each one is a real branch. Its translator emitted them at nearly
   every instruction (lane activity, condition codes, selects), and DXC couldn't cope. One
@@ -632,6 +793,10 @@ translation depends on it.
   out before shader model 6.7, which drew seams along triangle edges. `QuadReadLaneAt` includes
   them and fixed it. `[WaveOpsIncludeHelperLanes]` (shader model 6.7) hung the device instead:
   the mask of live lanes then took in helper lanes, which never finished.
+  * `QuadReadLaneAt` alone isn't enough (xcl, later). After `s_wqm`, the first lane in EXEC,
+    which `v_readfirstlane` picks, is often a helper on a primitive's edge, in another quad,
+    and before shader model 6.7 a wave read of it returns 0. xcl reads the value inside the
+    lane's own quad first, then does the wave read from a live lane of that quad.
 * **Coherence in compute shaders.** **Reported** by xcl: its translated compute shaders reach
   memory through one large UAV. That view had to be `globallycoherent`, or a tree build that
   reads what other groups wrote got wrong pointers. The console code relies on GLC loads and

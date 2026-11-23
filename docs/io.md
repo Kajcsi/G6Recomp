@@ -30,9 +30,16 @@ read-write:
 * The drive letters are an assumption until the pre-flight checks
   ([execution-model.md](execution-model.md)) confirm them: one check is which drive-letter
   paths the main executable's strings contain.
-* Persistent local storage (the package config asks for it) gets its own mount, under
-  `<data>\pls`, when `runtime/gdk` implements `XPersistentLocalStorageGetPath`. We choose what
-  that function returns, so the mount follows from it.
+* Persistent local storage (the package config asks for 2048 MB,
+  [game-package.md](game-package.md)) gets its own mount, under `<data>\pls`, when
+  `runtime/gdk` implements `XPersistentLocalStorageGetPath`. We choose what that function
+  returns, so the mount follows from it.
+  * Make it a drive root, such as `S:\`. **Reported** by xcl: Minecraft keeps only the drive
+    letter of the returned path, so a path below a root breaks it.
+  * **Reported** by xcl: a title reads a failed or tiny free-space answer as a full disk, so
+    `GetDiskFreeSpaceExW` on that mount reports the host volume's space, capped at the quota.
+* **Reported** by xcl: XDefiant uses `D:\` for its package drive, so the pre-flight check of
+  drive-letter strings looks for `D:` as well as `G:`.
 
 **The data directory.** `<data>` is `%LOCALAPPDATA%\G6Recomp\<build ID>`, one per supported
 build. Saves and settings will go there too, which is how `CLAUDE.md`'s "redirects writes" is
