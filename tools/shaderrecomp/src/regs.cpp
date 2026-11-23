@@ -90,6 +90,16 @@ bool contains(std::string_view name, std::string_view part) {
     return name.find(part) != std::string_view::npos;
 }
 
+// The d16 loads that write half a VGPR keep the other half, so they read it too: the byte and
+// short loads with "_d16" in their names (buffer, flat, and LDS, low or high half) and
+// buffer_load_format_d16_hi_x, as LLVM's AMDGPU target ties them. The other d16 format loads
+// pack whole registers.
+bool keeps_other_half(std::string_view name) {
+    const bool load = contains(name, "_load_") || name.starts_with("ds_read_");
+    return load && contains(name, "_d16") &&
+           (!contains(name, "format_") || contains(name, "format_d16_hi_"));
+}
+
 // Data dwords an atomic sends: one, two for _x2, and twice that for a compare-swap, which sends the
 // compare value too and returns half.
 unsigned atomic_data_count(std::string_view name) {
@@ -544,6 +554,9 @@ bool ds(Recorder& r, const Instruction& insn, std::string_view name) {
     } else if (name.starts_with("ds_read")) {
         const unsigned per = ds_width(name);
         r.read(addr, 1);
+        if (keeps_other_half(name)) {
+            r.read(vdst, 1);
+        }
         r.write(vdst, name.starts_with("ds_read2") ? 2 * per : per);
     } else if (name == "ds_swizzle_b32") {
         r.read(addr, 1);
@@ -585,6 +598,9 @@ bool buffer(Recorder& r, const Instruction& insn, std::string_view name) {
         if (lds) {
             r.read_m0(); // loads straight into LDS at m0
         } else {
+            if (keeps_other_half(name)) {
+                r.read(vdata, 1);
+            }
             r.write(vdata, count + tfe);
         }
     } else if (contains(name, "_store_")) {
@@ -678,6 +694,9 @@ bool flat(Recorder& r, const Instruction& insn, std::string_view name) {
     const Operand& vdst = destination(insn, 0);
     const unsigned count = memory_data_count(name);
     if (contains(name, "_load_")) {
+        if (keeps_other_half(name)) {
+            r.read(vdst, 1);
+        }
         r.write(vdst, count);
     } else if (contains(name, "_store_")) {
         r.read(source(insn, 1), count);

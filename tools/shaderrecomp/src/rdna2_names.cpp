@@ -11,7 +11,8 @@
 // public RDNA 2 reference, LLVM's AMDGPU target, and Mesa's ACO for GFX10. Added here: the
 // VOP3P integer ops 0x00 to 0x0D; v_div_fixup_f32, v_div_scale_f32 and v_div_fmas_f32; the VOP3
 // interpolation ops; the SOP1 exec, quadmask and movrel ops not listed before; s_call_b64 and
-// the subvector loop; the image atomics; the d16 buffer formats; and the d16 LDS ops 0xA0 to 0xA7.
+// the subvector loop; the image atomics; the d16 buffer formats; the d16 byte and short buffer and
+// flat loads and stores; and the d16 LDS ops 0xA0 to 0xA7.
 // Opcodes not listed have no name; none is guessed.
 
 #include <array>
@@ -624,11 +625,21 @@ const Table& mubuf_table() {
         {0x0E, "buffer_load_dwordx4"},
         {0x0F, "buffer_load_dwordx3"},
         {0x18, "buffer_store_byte"},
+        {0x19, "buffer_store_byte_d16_hi"},
         {0x1A, "buffer_store_short"},
+        {0x1B, "buffer_store_short_d16_hi"},
         {0x1C, "buffer_store_dword"},
         {0x1D, "buffer_store_dwordx2"},
         {0x1E, "buffer_store_dwordx4"},
         {0x1F, "buffer_store_dwordx3"},
+        {0x20, "buffer_load_ubyte_d16"},
+        {0x21, "buffer_load_ubyte_d16_hi"},
+        {0x22, "buffer_load_sbyte_d16"},
+        {0x23, "buffer_load_sbyte_d16_hi"},
+        {0x24, "buffer_load_short_d16"},
+        {0x25, "buffer_load_short_d16_hi"},
+        {0x26, "buffer_load_format_d16_hi_x"},
+        {0x27, "buffer_store_format_d16_hi_x"},
         {0x30, "buffer_atomic_swap"},
         {0x31, "buffer_atomic_cmpswap"},
         {0x32, "buffer_atomic_add"},
@@ -674,14 +685,17 @@ const Table& mtbuf_table() {
 // Named for the FLAT segment; mnemonic() renames them for GLOBAL and SCRATCH.
 const Table& flat_table() {
     static const Table table{
-        {0x08, "flat_load_ubyte"},    {0x09, "flat_load_sbyte"},
-        {0x0A, "flat_load_ushort"},   {0x0B, "flat_load_sshort"},
-        {0x0C, "flat_load_dword"},    {0x0D, "flat_load_dwordx2"},
-        {0x0E, "flat_load_dwordx4"},  {0x0F, "flat_load_dwordx3"},
-        {0x18, "flat_store_byte"},    {0x19, "flat_store_byte_d16_hi"},
-        {0x1A, "flat_store_short"},   {0x1B, "flat_store_short_d16_hi"},
-        {0x1C, "flat_store_dword"},   {0x1D, "flat_store_dwordx2"},
-        {0x1E, "flat_store_dwordx4"}, {0x1F, "flat_store_dwordx3"},
+        {0x08, "flat_load_ubyte"},     {0x09, "flat_load_sbyte"},
+        {0x0A, "flat_load_ushort"},    {0x0B, "flat_load_sshort"},
+        {0x0C, "flat_load_dword"},     {0x0D, "flat_load_dwordx2"},
+        {0x0E, "flat_load_dwordx4"},   {0x0F, "flat_load_dwordx3"},
+        {0x18, "flat_store_byte"},     {0x19, "flat_store_byte_d16_hi"},
+        {0x1A, "flat_store_short"},    {0x1B, "flat_store_short_d16_hi"},
+        {0x1C, "flat_store_dword"},    {0x1D, "flat_store_dwordx2"},
+        {0x1E, "flat_store_dwordx4"},  {0x1F, "flat_store_dwordx3"},
+        {0x20, "flat_load_ubyte_d16"}, {0x21, "flat_load_ubyte_d16_hi"},
+        {0x22, "flat_load_sbyte_d16"}, {0x23, "flat_load_sbyte_d16_hi"},
+        {0x24, "flat_load_short_d16"}, {0x25, "flat_load_short_d16_hi"},
     };
     return table;
 }

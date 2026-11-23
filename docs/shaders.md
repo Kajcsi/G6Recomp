@@ -500,7 +500,10 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
   (`regs.h`, written from AMD's public RDNA 2 reference) lists the registers each instruction
   reads and writes. From that it finds the registers a program reads before any path writes
   them, which are what the hardware and the driver load when a wave starts. It models every
-  instruction the 26,698 programs reach. A program that indexes registers through m0
+  instruction the 26,698 programs reach. A d16 load that writes half a VGPR (the byte and short
+  buffer, flat, and LDS loads with `_d16` in their names) keeps the other half, so the model
+  counts that register as read too, as LLVM's AMDGPU target ties them; none of the counts below
+  moves for it. A program that indexes registers through m0
   (`v_movreld` and its kin) can't be checked this way, because which registers it touches is
   only known when it runs: 16 compute, 3 pixel, 14 VS, and 4 mesh programs do. `scan` prints the
   counts by stage, `--out` adds each program's inputs to the local index, and the local

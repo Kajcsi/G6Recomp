@@ -171,6 +171,27 @@ TEST_CASE("memory footprints count address, descriptor and data registers") {
     CHECK_EQ(reads({0xDC348000, 0x00040002}), std::string("s4:2 v2:1"));
     CHECK_EQ(writes({0xDC348000, 0x00040002}), std::string("v0:2"));
 
+    // A d16 load writes half of its VGPR and keeps the other half, so it reads the register too:
+    // buffer_load_short_d16_hi v1, v2, s[4:7], 0 offen; global_load_ubyte_d16 v1, v[2:3], off;
+    // ds_read_u16_d16_hi v4, v1. buffer_store_byte_d16_hi v1, v2, s[4:7], 0 offen only reads.
+    CHECK_EQ(r::mnemonic(one({0xE0941004, 0x80010102})), std::string("buffer_load_short_d16_hi"));
+    CHECK_EQ(reads({0xE0941004, 0x80010102}), std::string("v2:1 s4:4 v1:1"));
+    CHECK_EQ(writes({0xE0941004, 0x80010102}), std::string("v1:1"));
+    CHECK_EQ(r::mnemonic(one({0xDC808000, 0x017D0002})), std::string("global_load_ubyte_d16"));
+    CHECK_EQ(reads({0xDC808000, 0x017D0002}), std::string("v2:2 v1:1"));
+    CHECK_EQ(writes({0xDC808000, 0x017D0002}), std::string("v1:1"));
+    CHECK_EQ(r::mnemonic(one({0xDA9C0000, 0x04000001})), std::string("ds_read_u16_d16_hi"));
+    CHECK_EQ(reads({0xDA9C0000, 0x04000001}), std::string("v1:1 v4:1"));
+    CHECK_EQ(writes({0xDA9C0000, 0x04000001}), std::string("v4:1"));
+    CHECK_EQ(r::mnemonic(one({0xE0641004, 0x80010102})), std::string("buffer_store_byte_d16_hi"));
+    CHECK_EQ(reads({0xE0641004, 0x80010102}), std::string("v2:1 s4:4 v1:1"));
+    CHECK_EQ(writes({0xE0641004, 0x80010102}), std::string(""));
+    // The packing d16 format loads write whole registers: tbuffer_load_format_d16_x reads only
+    // its address and descriptor.
+    CHECK_EQ(r::mnemonic(one({0xE8001004, 0x80210102})), std::string("tbuffer_load_format_d16_x"));
+    CHECK_EQ(reads({0xE8001004, 0x80210102}), std::string("v2:1 s4:4"));
+    CHECK_EQ(writes({0xE8001004, 0x80210102}), std::string("v1:1"));
+
     // ds_write2_b64 v1, v[2:3], v[4:5]; ds_read2_b32 v[4:5], v1
     CHECK_EQ(r::mnemonic(one({0xD9380000, 0x00040201})), std::string("ds_write2_b64"));
     CHECK_EQ(reads({0xD9380000, 0x00040201}), std::string("v1:1 v2:2 v4:2"));

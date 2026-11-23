@@ -385,6 +385,13 @@ TEST_CASE("the opcode tables name promoted and split compare opcodes") {
     CHECK(r::opcode_name(r::Encoding::kVop3, 0x12B) == std::string_view("v_fmac_f32"));
     CHECK(r::opcode_name(r::Encoding::kDs, 0xA1) == std::string_view("ds_write_b16_d16_hi"));
     CHECK(r::opcode_name(r::Encoding::kDs, 0xA7) == std::string_view("ds_read_u16_d16_hi"));
+    CHECK(r::opcode_name(r::Encoding::kMubuf, 0x19) ==
+          std::string_view("buffer_store_byte_d16_hi"));
+    CHECK(r::opcode_name(r::Encoding::kMubuf, 0x21) ==
+          std::string_view("buffer_load_ubyte_d16_hi"));
+    CHECK(r::opcode_name(r::Encoding::kMubuf, 0x26) ==
+          std::string_view("buffer_load_format_d16_hi_x"));
+    CHECK(r::opcode_name(r::Encoding::kFlat, 0x24) == std::string_view("flat_load_short_d16"));
     CHECK(r::opcode_name(r::Encoding::kExport, 0) == std::string_view("exp"));
 }
 
