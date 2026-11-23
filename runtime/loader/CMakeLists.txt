@@ -6,8 +6,8 @@ set(G6_TLS_DONOR_COUNT 4)
 set(G6_TLS_DONOR_CAPACITY 0x10000 CACHE STRING
     "Bytes of static TLS each donor DLL lends one guest module")
 
-# A support DLL that Windows loads normally on the loader's behalf. No C runtime and its own
-# entry point, so its DllMain does almost nothing while Windows holds the loader lock.
+# A TLS donor: a support DLL that Windows loads normally on the loader's behalf. No C runtime and
+# its own entry point, so its DllMain does almost nothing while Windows holds the loader lock.
 function(g6_support_dll target source entry)
     add_library(${target} SHARED ${source})
     g6_target_defaults(${target})
@@ -16,8 +16,6 @@ function(g6_support_dll target source entry)
     target_link_options(${target} PRIVATE /NODEFAULTLIB /ENTRY:${entry} /INCREMENTAL:NO)
     target_link_libraries(${target} PRIVATE kernel32)
 endfunction()
-
-g6_support_dll(g6threads support/g6threads.c g6_threads_entry)
 
 set(donors)
 math(EXPR last_donor "${G6_TLS_DONOR_COUNT} - 1")
@@ -45,7 +43,10 @@ add_library(g6loader STATIC
     src/loader.cpp
     src/patcher.cpp
     src/stubs.cpp
-    src/thread_support.cpp)
+    src/thread_support.cpp
+    # The thread notifier: a TLS callback that ends up in the host module. thread_support.cpp
+    # refers to it, so every host of the loader links it.
+    support/thread_notifier.c)
 target_include_directories(g6loader PUBLIC include PRIVATE src support)
 target_link_libraries(g6loader PUBLIC g6kernel g6common)
 # The hook engine checks patch windows with the analysis library and answers trapped cpuid with
@@ -56,4 +57,4 @@ target_compile_definitions(g6loader PRIVATE
     G6_TLS_DONOR_CAPACITY=${G6_TLS_DONOR_CAPACITY})
 g6_target_defaults(g6loader)
 # The loader loads these from its own folder at run time.
-add_dependencies(g6loader g6threads ${donors})
+add_dependencies(g6loader ${donors})

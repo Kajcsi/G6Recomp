@@ -75,12 +75,14 @@ ThreadSupport& ThreadSupport::get() {
 }
 
 ThreadSupport::ThreadSupport() {
+    // The notifier is linked into the host module, but only runs if the host's TLS directory
+    // lists it. Without it no guest module would see a thread start or end.
+    if (g6_threads_started() == 0) {
+        throw kernel::LoadError(
+            "the loader's thread notifier never ran: the host module's TLS directory doesn't call "
+            "it (link the C runtime's TLS support or g6exetls, keeping their .CRT$XL callbacks)");
+    }
     const std::filesystem::path folder = runtime_folder();
-
-    HMODULE threads = load_support(folder, L"g6threads.dll");
-    set_callback_ = lookup<G6ThreadsSetCallback>(threads, "g6_threads_set_callback");
-    for_each_ = lookup<G6ThreadsForEach>(threads, "g6_threads_for_each");
-    current_ = lookup<G6ThreadsCurrent>(threads, "g6_threads_current");
 
     using DonorQuery = ULONG (*)();
     for (int slot = 0; slot < kDonorCount; ++slot) {
@@ -113,8 +115,8 @@ ThreadSupport::ThreadSupport() {
         }
         indices_[slot] = index;
     }
-    LOG_DEBUG(loader, "loaded g6threads.dll and {} TLS donors of {:#x} bytes from {}", kDonorCount,
-              kDonorCapacity, folder.string());
+    LOG_DEBUG(loader, "loaded {} TLS donors of {:#x} bytes from {}", kDonorCount, kDonorCapacity,
+              folder.string());
     find_executable_slot();
 }
 
@@ -176,16 +178,16 @@ void ThreadSupport::find_executable_slot() {
               kDonorCapacity);
 }
 
-void ThreadSupport::set_callback(G6ThreadCallback callback, void* context) const {
-    set_callback_(callback, context);
+void ThreadSupport::set_callback(G6ThreadCallback callback, void* context) {
+    g6_threads_set_callback(callback, context);
 }
 
-void ThreadSupport::for_each_thread(G6ThreadVisitor visitor, void* context) const {
-    for_each_(visitor, context);
+void ThreadSupport::for_each_thread(G6ThreadVisitor visitor, void* context) {
+    g6_threads_for_each(visitor, context);
 }
 
-G6ThreadRecord* ThreadSupport::current_thread() const {
-    return current_();
+G6ThreadRecord* ThreadSupport::current_thread() {
+    return g6_threads_current();
 }
 
 int ThreadSupport::acquire_donor(bool executable) {
@@ -194,7 +196,7 @@ int ThreadSupport::acquire_donor(bool executable) {
         lent_[slot] = true;
         // A previous loader may have used this slot; no thread's block holds the next guest's
         // template yet.
-        for_each_(
+        g6_threads_for_each(
             [](G6ThreadRecord* record, void* context) {
                 InterlockedExchange(&record->tls_state[*static_cast<int*>(context)], 0);
             },

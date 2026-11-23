@@ -154,16 +154,39 @@ Static TLS for modules we map ourselves uses only documented behaviour:
   ending before it starts with error 193.
 * Each guest module with a TLS directory gets one donor. The loader writes that donor's TLS
   index into the guest module's own index variable.
-* A thread notifier, `g6threads.dll`, also loaded normally, passes `DLL_THREAD_ATTACH` and
-  `DLL_THREAD_DETACH` on to the loader. On attach the loader copies each guest module's TLS
-  template into its block, then runs the guest's TLS callbacks and `DllMain` in initialization
-  order; on detach it runs them in reverse. The template is copied from the mapped image, so
-  pointers in it are relocated.
+* A **thread notifier** passes `DLL_THREAD_ATTACH` and `DLL_THREAD_DETACH` on to the loader. It
+  is a TLS callback in the host module (`runtime/loader/support/thread_notifier.c`, part of the
+  loader library), so it sits in the host executable's TLS callback array next to the C
+  runtime's. On attach the loader copies each guest module's TLS template into its block, then
+  runs the guest's TLS callbacks and `DllMain` in initialization order; on detach it runs them in
+  reverse. The template is copied from the mapped image, so pointers in it are relocated. The
+  loader refuses to start if the notifier never ran, which means the host's TLS directory doesn't
+  list it.
 * The notifier also keeps a list of the threads it has seen. When a module loads, the loader
-  fills its block on every thread in the list. A thread that started before the notifier loaded
-  (that is, before the first `Loader` was created) isn't in the list and keeps the donor's
-  contents, except the thread doing the load, which is filled directly. So the runtime creates
-  the `Loader` before it starts other threads.
+  fills its block on every thread in the list. Windows calls an executable's TLS callbacks from
+  the start of the process, so the list holds every thread that takes part in DLL notifications,
+  however early it started. Threads of host libraries and thread-pool workers started before the
+  first `Loader` get the guest's TLS too. `test_tls_order` (CI) checks a thread started before
+  anything else, and the check fails when the notifier ignores threads from before the loader.
+  Threads created to skip DLL notifications never appear in the list; ntdll's parallel-loader
+  workers are such threads, and they run no DLL code. **Measured** on Windows 11 (build 26200):
+  * The executable's TLS callbacks run after every DLL's `DllMain`, both on attach and on
+    detach. Within the array they run in array order both times. The notifier's entry sorts
+    first (`.CRT$XLB`), so on an exiting thread guest code runs before the destructors of the
+    host's own `thread_local` variables.
+  * A thread's detach notifications all run before Windows frees its TLS blocks. A walk of the
+    list holds the list's lock, and an exiting thread takes the same lock to leave the list, so
+    the loader never fills a block that is being freed.
+* **Why the notifier isn't a DLL, and why we don't walk the process's threads.** The notifier
+  used to be a DLL, `g6threads.dll`, which only saw threads started after it loaded. A thread
+  started earlier kept the donor's contents, so the runtime had to create the `Loader` before
+  any other thread. Leonida gives such threads their TLS by listing the process's threads and
+  writing through each one's TEB ([related-work.md](related-work.md)). We didn't, because of what
+  we measured on the same build. An exiting thread clears its TEB's pointer to the TLS array
+  before it ends, but not under the loader lock: in 2 of 3,000 exits the pointer changed while
+  another thread held that lock. So taking the lock doesn't keep the blocks alive. And threads
+  that skip DLL notifications never say they are leaving. A write through a thread the notifier
+  hasn't seen can therefore land in freed memory.
 * A donor holds 64 KiB (`G6_TLS_DONOR_CAPACITY` in CMake), and the loader rejects a module that
   needs more or aligns its TLS to more than 16 bytes. Sizing the donors from the pinned build's
   TLS directories at configure time is later work.

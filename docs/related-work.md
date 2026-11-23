@@ -245,6 +245,7 @@ copy, and port code only where it fits our design.
 | `Bink2Scarlett.dll` decodes all 515 movies' first frames and all 229 audio tracks under a native loader with only xmem shimmed; `BinkSetFileOffset` with open flag 0x20 plays from `movies.rpf` in place | Reported | [side-dlls.md](side-dlls.md) |
 | `data.rpf` has 377 unread non-zero ranges (4.2%); streams aren't always 4 KiB-aligned; a resource's system part ends at a stream whose inflated size is a multiple of 64 KiB, plus at most one more; `core_bvh4.rpf` has 43 streams of exactly 8 MiB | Reported | [rpf.md](rpf.md) |
 | Host `GameInput.dll` can be bound from mapped code (GameInput 0.2309); v0's `GetTemporalReading` returns `E_NOTIMPL` by design; a title's raw mouse registration replaces any of our own | Reported | Later: `runtime/input` (M4) |
+| Threads that exist before the loader starts (pool workers, host libraries' threads) need the guest's static TLS too; Leonida lists the process's threads and writes the template through each TEB | Taken as a problem, solved our own way: the thread notifier became a TLS callback in the host executable, which sees every thread from the start of the process. We measured that an exiting thread clears its TLS array pointer outside the loader lock, so writing through threads we were never told about could hit freed memory. `test_tls_order` checks a thread started before anything else | [execution-model.md](execution-model.md) |
 
 ### Not taken
 

@@ -3,7 +3,9 @@
 // loader's donors load, so the donors get higher ones, and loading a donor can make Windows give
 // every thread a longer TLS array. The donors load once per process, so the test starts itself
 // again as a child process for each number of copies of tls_order.dll to load first. Each child
-// loads them, starts the loader, and checks a guest module's static TLS on two threads.
+// loads them, starts the loader, and checks a guest module's static TLS on three threads: its
+// own, one it starts afterwards, and one it started before anything else, whose TLS array every
+// later load may have replaced.
 
 #include <cstdio>
 #include <cstdlib>
@@ -126,6 +128,35 @@ TEST_CASE("[child] load copies of tls_order.dll, then start the loader") {
         SKIP("runs only in the child processes the test above starts");
     }
 
+    // A thread that exists before the loader's support does, as host libraries' threads may. It
+    // waits for the guest, then reads the guest's thread-local value.
+    ValueFn early_value = nullptr;
+    ULONG on_early_thread = 0;
+    HANDLE guest_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    REQUIRE(guest_ready != nullptr);
+    std::thread early([&] {
+        WaitForSingleObject(guest_ready, INFINITE);
+        if (early_value != nullptr) {
+            on_early_thread = early_value();
+        }
+    });
+    // Lets the thread go however the test case ends, so a failed check doesn't leave it joinable.
+    struct Release {
+        HANDLE event;
+        std::thread& thread;
+        Release(HANDLE ready, std::thread& waiting) : event(ready), thread(waiting) {}
+        Release(const Release&) = delete;
+        Release& operator=(const Release&) = delete;
+        ~Release() {
+            SetEvent(event);
+            if (thread.joinable()) {
+                thread.join();
+            }
+            CloseHandle(event);
+        }
+    };
+    const Release release(guest_ready, early);
+
     // Windows gives each copy an index of its own and a block on this thread, filled from the
     // template.
     std::vector<HMODULE> loaded;
@@ -153,6 +184,11 @@ TEST_CASE("[child] load copies of tls_order.dll, then start the loader") {
         ULONG on_new_thread = 0;
         std::thread([&] { on_new_thread = value(); }).join();
         REQUIRE(on_new_thread == G6_TLS_ORDER_MAGIC);
+
+        early_value = value;
+        SetEvent(guest_ready);
+        early.join();
+        REQUIRE(on_early_thread == G6_TLS_ORDER_MAGIC);
     }
     // A longer array holds the same blocks: Windows moves the pointers, not the blocks.
     if (first_block != nullptr) {

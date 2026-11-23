@@ -167,7 +167,7 @@ Loader::Impl* active_loader();
 // Adds the HLE loader functions to the registry (hle_loader.cpp).
 void register_loader_hle(ImportRegistry& imports);
 
-// Thread notifications from g6threads.dll (loader.cpp).
+// Thread notifications from the thread notifier, support/thread_notifier.c (loader.cpp).
 void on_thread_notification(G6ThreadRecord* record, unsigned long reason, void* context);
 
 } // namespace g6::loader

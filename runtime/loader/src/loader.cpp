@@ -236,7 +236,7 @@ Loader::Impl::Impl(LoaderOptions options)
             throw kernel::LoadError(
                 fmt::format("cannot reserve room for module handles (error {})", GetLastError()));
         }
-        threads.set_callback(&on_thread_notification, this);
+        ThreadSupport::set_callback(&on_thread_notification, this);
     } catch (...) {
         if (pseudo_region != nullptr) {
             VirtualFree(pseudo_region, 0, MEM_RELEASE);
@@ -248,7 +248,7 @@ Loader::Impl::Impl(LoaderOptions options)
 
 Loader::Impl::~Impl() {
     // Returns once no notification is running, and none starts afterwards.
-    threads.set_callback(nullptr, nullptr);
+    ThreadSupport::set_callback(nullptr, nullptr);
 
     if (const ModuleList* list = published()) {
         for (auto it = list->modules.rbegin(); it != list->modules.rend(); ++it) {
@@ -679,7 +679,7 @@ void Loader::Impl::fill_tls_on_existing_threads(const std::vector<Module::State*
     if (blocks.empty()) {
         return;
     }
-    threads.for_each_thread(
+    ThreadSupport::for_each_thread(
         [](G6ThreadRecord* record, void* context) {
             void** const array = tls_array_of(record->teb);
             for (const TlsInfo* tls : *static_cast<std::vector<const TlsInfo*>*>(context)) {
@@ -687,10 +687,11 @@ void Loader::Impl::fill_tls_on_existing_threads(const std::vector<Module::State*
             }
         },
         &blocks);
-    // A thread that started before g6threads.dll loaded has no record. If that is this one,
-    // fill its blocks directly; other such threads keep the donor's contents (see
+    // A thread the notifier never saw has no record: one created to skip DLL notifications, or,
+    // with the loader in a DLL host, one that started before that DLL loaded. If that is this
+    // one, fill its blocks directly; other such threads keep the donor's contents (see
     // docs/execution-model.md).
-    if (threads.current_thread() == nullptr) {
+    if (ThreadSupport::current_thread() == nullptr) {
         void** const array = current_tls_array();
         for (const TlsInfo* tls : blocks) {
             fill_tls_block(array, *tls);
@@ -751,7 +752,7 @@ void Loader::Impl::discard(const std::vector<Module::State*>& batch, bool was_pu
         publish({}, batch);
         // Setting the callback again waits for notifications already running, which may still
         // be looking at the discarded modules.
-        threads.set_callback(&on_thread_notification, this);
+        ThreadSupport::set_callback(&on_thread_notification, this);
     }
     for (Module::State* module : batch) {
         release(*module);

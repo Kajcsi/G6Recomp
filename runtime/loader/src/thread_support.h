@@ -1,14 +1,14 @@
 #pragma once
 
-// The loader's process-wide support DLLs (see support/): g6threads.dll, which passes Windows'
-// thread notifications on to the loader, and the TLS donors, each of which lends its static
-// TLS block to one guest module.
+// The loader's process-wide thread support (see support/): the thread notifier, a TLS callback in
+// the host module that passes Windows' thread notifications on to the loader, and the TLS donor
+// DLLs, each of which lends its static TLS block to one guest module.
 
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 
-#include "g6threads.h"
+#include "thread_notifier.h"
 
 namespace g6::loader {
 
@@ -21,16 +21,17 @@ public:
     static constexpr int kExecutableSlot = kDonorCount;
     static_assert(kDonorCount + 1 <= G6_THREADS_MAX_TLS_SLOTS);
 
-    // Loads the DLLs from the runtime's own folder on first use. Throws kernel::LoadError when
-    // one is missing or doesn't behave as expected.
+    // Loads the donors from the runtime's own folder on first use. Throws kernel::LoadError when
+    // one is missing or doesn't behave as expected, or when the host's TLS directory doesn't run
+    // the thread notifier.
     static ThreadSupport& get();
 
     ThreadSupport(const ThreadSupport&) = delete;
     ThreadSupport& operator=(const ThreadSupport&) = delete;
 
-    void set_callback(G6ThreadCallback callback, void* context) const;
-    void for_each_thread(G6ThreadVisitor visitor, void* context) const;
-    G6ThreadRecord* current_thread() const;
+    static void set_callback(G6ThreadCallback callback, void* context);
+    static void for_each_thread(G6ThreadVisitor visitor, void* context);
+    static G6ThreadRecord* current_thread();
 
     // Lends a block and returns its slot, with every thread's state for that slot reset. A guest
     // executable gets kExecutableSlot when the host lends it and no other guest has it; anything
@@ -47,10 +48,6 @@ private:
 
     // Checks the host executable's offer of TLS index 0, if it makes one.
     void find_executable_slot();
-
-    G6ThreadsSetCallback set_callback_ = nullptr;
-    G6ThreadsForEach for_each_ = nullptr;
-    G6ThreadsCurrent current_ = nullptr;
 
     std::mutex mutex_;
     bool lends_executable_slot_ = false;
