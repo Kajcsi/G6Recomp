@@ -164,6 +164,48 @@ TEST_CASE("discovery: options turn seed sources off") {
     CHECK(without_calls.find(kL2) != nullptr);
 }
 
+TEST_CASE("discovery: a lea of a padded address splits the leaf that jumps to it") {
+    // A leaf that ends in a jump to a second function placed after int3 padding, the way a
+    // compiler lays out a tail call to a function it emits right after. Without .pdata or a
+    // pointer to the second function, only the `lea` that takes its address marks it.
+    constexpr uint32_t kA = 0x1000;
+    constexpr uint32_t kB = 0x1020;
+    constexpr uint32_t kInsideB = 0x1030; // 16-byte aligned, but no padding before it
+    PeBuilder b;
+    b.add_section(".text", PeBuilder::kCode, 0x100, 0xCC);
+    b.put_bytes(kA, {0x48, 0x8D, 0x05}); // lea rax, [B]
+    b.put<int32_t>(kA + 3, static_cast<int32_t>(kB - (kA + 7)));
+    b.put_bytes(kA + 7, {0x48, 0x8D, 0x0D}); // lea rcx, [inside B]
+    b.put<int32_t>(kA + 10, static_cast<int32_t>(kInsideB - (kA + 14)));
+    b.put_bytes(kA + 14, {0xEB, static_cast<uint8_t>(kB - (kA + 16))}); // jmp B
+    b.put_bytes(kB, {0xB8, 0x01, 0x00, 0x00, 0x00});                    // mov eax, 1
+    for (uint32_t rva = kB + 5; rva < kInsideB; ++rva) {
+        b.put_bytes(rva, {0x90});
+    }
+    b.put_bytes(kInsideB, {0xC3});
+    b.set_entry_point(kA);
+    const g6::pe::Image image = b.image();
+
+    const DiscoveryResult result = recomp::discover_functions(image);
+    CHECK_EQ(result.functions.size(), size_t{2});
+    CHECK_EQ(result.stats.leaf_splits, size_t{1});
+    CHECK_EQ(result.stats.seeds_mid_function, size_t{0});
+    CHECK_EQ(result.stats.candidates_rejected, size_t{0});
+    const DiscoveredFunction& a = require_function(result, kA);
+    CHECK_EQ(a.end, kA + 16);
+    const DiscoveredFunction& second = require_function(result, kB);
+    CHECK_EQ(second.end, kInsideB + 1);
+    CHECK_EQ(second.sources, uint32_t{recomp::kSourceLea});
+    CHECK(result.find(kInsideB) == nullptr);
+
+    DiscoveryOptions no_follow;
+    no_follow.follow_calls = false;
+    const DiscoveryResult without = recomp::discover_functions(image, no_follow);
+    CHECK_EQ(without.functions.size(), size_t{1});
+    REQUIRE(without.find(kA) != nullptr);
+    CHECK_EQ(without.find(kA)->end, kInsideB + 1);
+}
+
 TEST_CASE("describe_sources joins names in a fixed order") {
     CHECK_EQ(recomp::describe_sources(0), std::string("none"));
     CHECK_EQ(recomp::describe_sources(recomp::kSourceTailCall | recomp::kSourcePdata),

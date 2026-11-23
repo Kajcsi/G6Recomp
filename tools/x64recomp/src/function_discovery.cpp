@@ -21,7 +21,7 @@ struct SourceName {
 constexpr SourceName kSourceNames[] = {
     {kSourcePdata, "pdata"},     {kSourceEntryPoint, "entry"}, {kSourceExport, "export"},
     {kSourceTlsCallback, "tls"}, {kSourceGuardCf, "guard-cf"}, {kSourceRelocation, "reloc"},
-    {kSourceDirectCall, "call"}, {kSourceTailCall, "tail"},
+    {kSourceDirectCall, "call"}, {kSourceTailCall, "tail"},    {kSourceLea, "lea"},
 };
 
 // One past the end of the executable section holding `rva`, or 0 when it is not code.
@@ -236,23 +236,47 @@ DiscoveryResult discover_functions(const Image& image, const DiscoveryOptions& o
         }
     }
 
-    // cpuid and xgetbv sites seen by the latest walk; kept only when the walk is accepted.
+    // cpuid and xgetbv sites, and function addresses taken by `lea`, seen by the latest walk;
+    // kept only when the walk is accepted.
     std::vector<uint32_t> walk_cpuid;
     std::vector<uint32_t> walk_xgetbv;
+    std::vector<uint32_t> walk_lea;
+    // A function start the compiler aligned: 16-byte aligned, with int3 padding just before.
+    // Code labels inside a function have no padding before them, and data in an executable
+    // section rarely sits right after a 0xCC byte at such an address.
+    const auto padded_entry = [&](uint32_t rva) {
+        return rva % 16 == 0 && rva != 0 && image.is_executable(rva) &&
+               image.is_executable(rva - 1) && image.read<uint8_t>(rva - 1) == 0xCC;
+    };
     const InstructionVisitor collect_sites = [&](uint32_t rva,
                                                  const ZydisDecodedInstruction& insn) {
         if (insn.mnemonic == ZYDIS_MNEMONIC_CPUID) {
             walk_cpuid.push_back(rva);
         } else if (insn.mnemonic == ZYDIS_MNEMONIC_XGETBV) {
             walk_xgetbv.push_back(rva);
+        } else if (insn.mnemonic == ZYDIS_MNEMONIC_LEA && options.follow_calls &&
+                   (insn.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0 && insn.raw.modrm.mod == 0 &&
+                   insn.raw.modrm.rm == 5) {
+            const int64_t target = int64_t{rva} + insn.length + insn.raw.disp.value;
+            if (target > 0 && target < int64_t{image.size_of_image()} &&
+                padded_entry(static_cast<uint32_t>(target))) {
+                walk_lea.push_back(static_cast<uint32_t>(target));
+            }
         }
+    };
+    const auto clear_sites = [&] {
+        walk_cpuid.clear();
+        walk_xgetbv.clear();
+        walk_lea.clear();
     };
     const auto keep_sites = [&] {
         result.cpuid_sites.insert(result.cpuid_sites.end(), walk_cpuid.begin(), walk_cpuid.end());
         result.xgetbv_sites.insert(result.xgetbv_sites.end(), walk_xgetbv.begin(),
                                    walk_xgetbv.end());
-        walk_cpuid.clear();
-        walk_xgetbv.clear();
+        for (const uint32_t target : walk_lea) {
+            classify(target, kSourceLea);
+        }
+        clear_sites();
     };
 
     // 3. Walk every .pdata function for direct calls and tail jumps out of it.
@@ -321,8 +345,7 @@ DiscoveryResult discover_functions(const Image& image, const DiscoveryOptions& o
         if (container != nullptr) {
             limit = std::min(limit, container->end);
         }
-        walk_cpuid.clear();
-        walk_xgetbv.clear();
+        clear_sites();
         const WalkResult walk = walk_leaf(start, limit, collect_sites);
         const bool valid = walk.ok() && !walk.first_is_trap && walk.instructions != 0;
         if (container != nullptr) {

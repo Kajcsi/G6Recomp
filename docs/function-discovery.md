@@ -20,6 +20,13 @@ guest function starts and which bytes belong to it. This page describes how
    section: vtables, callback tables, `mov reg, imm64` of a function address.
 4. **Control flow.** Direct `call` targets and tail jumps (unconditional or conditional jumps
    that leave a function) found by walking every known function.
+5. **Addresses taken with `lea`.** A RIP-relative `lea` in a walked function whose target is
+   16-byte aligned and has an `int3` padding byte just before it. Labels inside a function have
+   no padding in front of them, so this only picks up function starts. It matters for leaves
+   in an image without a CFG table: a leaf the compiler placed right after another leaf that
+   jumps to it is walked as part of that leaf, and the `lea` that passes its address as a
+   callback is the only thing that marks where it begins. `--no-follow` turns this source off
+   along with calls and tail jumps.
 
 Anything that is not already a `.pdata` function becomes a *leaf candidate*. A leaf is a
 function with no unwind data; by the ABI it can't call anything or touch the stack, so in
@@ -148,10 +155,14 @@ helpers that jump to an address passed in an argument register, such as the exce
 continuation helpers, plus the delay-load helper's final jump. The same checks run on the main
 executable through `ctest --preset windows-debug -L "^game$"` and `x64recomp functions <exe>`.
 
-The main executable has 403,884 functions: 298,742 from `.pdata` (with 515 chained fragments)
-and 105,142 leaves, 231 of them import thunks. 3,401 jump tables resolve with 39,836 entries;
-234 of them are unbounded, and 14 more are rejected. 7,550 indirect jumps are tail calls through
-memory, and 171 stay unresolved. The walk has no decode, unwind, or directory errors. Before
+The main executable has 438,049 functions: 298,742 from `.pdata` (with 515 chained fragments)
+and 139,307 leaves, 232 of them import thunks. 3,403 jump tables resolve with 39,849 entries;
+234 of them are unbounded, and 14 more are rejected. 8,159 indirect jumps are tail calls through
+memory, and 184 stay unresolved. The walk has no decode, unwind, or directory errors. The
+executable has no CFG table, and code takes function addresses with `lea`, which needs no
+relocation: 91,285 functions have their address taken that way, 56,009 of them `.pdata`
+functions. 33,758 leaves are found by nothing else, and before the `lea` seed discovery found
+403,884 functions. 3,170 leaves are cut where they run into another function's entry. Before
 unbounded reads stopped at a byte index's range and at the next table, the scan found 23 decode
 errors, all in code reached through entries read past the end of a table: one from a bytecode
 interpreter's 256-entry opcode table, the rest from tables read into the next table of the same

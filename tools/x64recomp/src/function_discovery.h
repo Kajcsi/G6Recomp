@@ -4,7 +4,7 @@
 // function's code lives. Non-leaf functions come from .pdata (with chained fragments grouped
 // under their primary entry). Leaf functions have no .pdata entry, so they are found from
 // seeds (entry point, exports, TLS callbacks, the CFG table, relocated code pointers) and by
-// following direct calls and tail jumps out of known functions.
+// following direct calls, tail jumps, and `lea` of padded code addresses out of known functions.
 
 #include <cstdint>
 #include <string>
@@ -24,6 +24,9 @@ enum SeedSource : uint32_t {
     kSourceRelocation = 1u << 5,
     kSourceDirectCall = 1u << 6,
     kSourceTailCall = 1u << 7,
+    // A RIP-relative `lea` of an address that begins after int3 padding, 16-byte aligned: how
+    // code takes the address of a function that has no .pdata entry, relocation, or CFG entry.
+    kSourceLea = 1u << 8,
 };
 
 std::string describe_sources(uint32_t sources);
