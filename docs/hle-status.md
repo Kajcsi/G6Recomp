@@ -110,7 +110,7 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 
 | Imports | Status | Notes |
 |---|---|---|
-| `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions are HLE (`runtime/imports/ucrtbase`); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
+| `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions and the exit functions are HLE (`runtime/imports/ucrtbase`); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
 | `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
 | `api-ms-win-core-libraryloader-*` | implemented | The loader's HLE (above). The resource functions are forwarded: a guest handle is a mapped image. |
 | `api-ms-win-core-file-*` (and the same names from `kernel32`, `kernelbase`) | partial | Functions that take a handle are forwarded. The common path functions are HLE on `runtime/io` (`runtime/imports/kernelbase`). The other path functions stay stubbed: `INVALID_HANDLE_VALUE` for `CreateFile3` and the other `FindFirst` families, `INVALID_FILE_SIZE` for `GetCompressedFileSize`, zero otherwise. |
@@ -212,6 +212,19 @@ even in a debug build of the runtime. Errors set `errno` and `_doserrno` as the 
 | `_stat64`, `_wstat64`, `_access`, `_waccess` | implemented | `st_dev` and `st_rdev` are the console drive's number. |
 | `_mkdir`, `_wmkdir`, `_rmdir`, `_wrmdir`, `remove`, `_wremove`, `_unlink`, `_wunlink`, `rename`, `_wrename` | implemented | A mount's root can't be removed or renamed. |
 | `_getcwd`, `_wgetcwd`, `_chdir`, `_wchdir` | implemented | The same current directory as the Win32 functions. A null buffer is allocated with the guest CRT's `malloc`. |
+
+The executable's exit handlers, from `api-ms-win-crt-runtime-*`. The host CRT's tables are
+process-wide, so these work on tables of the guest's own, with the UCRT's rules as measured on
+the host ([execution-model.md](execution-model.md), phase 5, "Exit"). The ending functions then
+call the runner's end function, `ExitProcess` by default.
+
+| Function | Status | Notes |
+|---|---|---|
+| `_crt_atexit`, `_crt_at_quick_exit` | implemented | What `atexit`, `at_quick_exit`, and an executable's static destructors reach. A null function is refused with -1; the UCRT faults on one. DLLs keep their own tables through `_register_onexit_function`, which stays forwarded. |
+| `_register_thread_local_exe_atexit_callback` | implemented | Kept for the guest alone, so a host executable that registered with the same CRT doesn't clash. A second call ends the process with a fast fail, as the UCRT's does. |
+| `exit`, `_cexit` | implemented | The thread_local callback for the calling thread, then the atexit table newest first; a handler registered meanwhile runs next. `exit` then ends the guest process; `_cexit` returns, and doesn't flush the streams, as the UCRT's doesn't. |
+| `quick_exit` | implemented | The at-quick-exit table, then the end. |
+| `_exit`, `_Exit`, `_c_exit` | implemented | No handlers; the first two end the guest process. |
 
 <!-- Template for a folder:
 

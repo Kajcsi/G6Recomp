@@ -453,6 +453,25 @@ Phases 1, 2, and 4 don't need the main executable.
      the native rules for `exit`, `_cexit`, `_exit` and `quick_exit`. `at_quick_exit` and
      `_register_thread_local_exe_atexit_callback` are open there. Check what the UCRT does on a
      second registration of the latter, since our host executable may register first.
+
+     **Checked here** (Windows 11 26200, a scratch `/MD` program on the host UCRT): a second
+     `_register_thread_local_exe_atexit_callback` ends the process with a fast fail
+     (0xC0000409). `exit` calls that callback with `DLL_PROCESS_DETACH` for the calling thread,
+     then runs the atexit table newest first; a handler a handler registers runs next. `_cexit`
+     does the same and returns, and an `exit` after it runs only what was registered since.
+     `quick_exit` runs the at-quick-exit table alone. None of them flushes the streams: the
+     UCRT does that when the process ends, also after `_exit` or a plain `ExitProcess`, but not
+     after `TerminateProcess`.
+
+     **Ours** (`g6/imports/crt_exit.h`): the guest gets its own two tables and callback, and
+     `exit`, `_exit`, `_Exit`, `quick_exit`, `_cexit`, and `_c_exit` follow those rules on them,
+     under an exit lock that the leaving thread keeps. The ending forms then call the runner's
+     end function, `ExitProcess` by default, which ends the host process with the guest's code
+     and flushes the guest's streams on the way. `abort`, `terminate`, and the guest's own
+     `ExitProcess` stay forwarded: they end the process as on the console. Guest DLLs get no
+     `DLL_PROCESS_DETACH` when the process ends this way, since Windows only notifies the DLLs it
+     loaded; their static destructors don't run. Tested by `test_crt_exit` on an original `/MD`
+     executable.
    * **Command line.** The game's command line has to be in place before the process-attach
      callbacks run, and the CRT's argument functions read the environment when they are called,
      not from a pointer kept at startup.

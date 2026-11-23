@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include "combase/class_activation.h"
+#include "g6/imports/crt_exit.h"
 #include "g6/imports/crt_paths.h"
 #include "g6/imports/files.h"
 #include "g6/imports/registry.h"
@@ -83,6 +84,9 @@ void add_crt(ImportRegistry& imports) {
     // The path functions runtime/io maps (docs/io.md). Every other function that takes a path
     // stays a stub until something imports it.
     ucrtbase::register_paths(imports);
+    // The executable's exit handlers go to tables of its own, not the host CRT's process-wide
+    // ones (docs/execution-model.md, phase 5, "Exit").
+    ucrtbase::register_exit(imports);
 
     // The rest of the path functions: those that return -1 on failure ...
     stub_each(imports, kCrt,

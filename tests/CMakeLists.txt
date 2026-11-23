@@ -315,6 +315,28 @@ g6_add_test(test_imports LABEL nogame
             imports/test_xmem.cpp
     LIBS g6imports runtimeobject)
 
+# The guest executable for test_crt_exit: original, and release /MD like the game's executable,
+# so atexit, static destructors, and thread_local destructors reach the CRT's exit functions
+# through its imports. onecore_apiset instead of kernel32, as in console code. A folder of its own
+# serves as the loader's search path; the test copies the host's vcruntime140.dll into a
+# subfolder at run time.
+set(G6_EXIT_GUEST_DIR ${CMAKE_BINARY_DIR}/exit_guest)
+add_executable(exit_guest fixtures/exit_guest/exit_guest.cpp)
+g6_target_defaults(exit_guest)
+set_target_properties(exit_guest PROPERTIES
+    MSVC_RUNTIME_LIBRARY MultiThreadedDLL
+    RUNTIME_OUTPUT_DIRECTORY ${G6_EXIT_GUEST_DIR})
+target_link_options(exit_guest PRIVATE
+    /SUBSYSTEM:CONSOLE /INCREMENTAL:NO /NODEFAULTLIB:kernel32.lib)
+target_link_libraries(exit_guest PRIVATE onecore_apiset)
+
+g6_add_test(test_crt_exit LABEL nogame
+    SOURCES imports/test_crt_exit.cpp
+    LIBS g6imports)
+target_include_directories(test_crt_exit PRIVATE fixtures/exit_guest)
+target_compile_definitions(test_crt_exit PRIVATE G6_EXIT_GUEST_DIR="${G6_EXIT_GUEST_DIR}")
+add_dependencies(test_crt_exit exit_guest)
+
 g6_add_test(test_game_files LABEL game
     SOURCES game/test_game_files.cpp
     LIBS x64recomp_core)

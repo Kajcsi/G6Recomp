@@ -6,6 +6,7 @@ add_library(g6imports STATIC
     combase/class_activation.cpp
     kernelbase/files.cpp
     kernelbase/registry.cpp
+    ucrtbase/exit.cpp
     ucrtbase/paths.cpp
     xmem/xmem.cpp)
 target_include_directories(g6imports PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

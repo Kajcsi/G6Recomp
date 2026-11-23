@@ -147,6 +147,17 @@ TEST_CASE("the path functions runtime/io maps are HLE, never the host's") {
         {"api-ms-win-crt-filesystem-l1-1-0.dll", "_wunlink", L"ucrtbase.dll"},
         {"api-ms-win-crt-environment-l1-1-0.dll", "_wgetcwd", L"ucrtbase.dll"},
         {"api-ms-win-crt-filesystem-l1-1-0.dll", "_wchdir", L"ucrtbase.dll"},
+        // The executable's own exit tables (g6/imports/crt_exit.h).
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_crt_atexit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_crt_at_quick_exit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_register_thread_local_exe_atexit_callback",
+         L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "exit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "quick_exit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_exit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_Exit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_cexit", L"ucrtbase.dll"},
+        {"api-ms-win-crt-runtime-l1-1-0.dll", "_c_exit", L"ucrtbase.dll"},
     };
     for (const Expected& item : expected) {
         INFO(std::string(item.dll) + "!" + item.name);
