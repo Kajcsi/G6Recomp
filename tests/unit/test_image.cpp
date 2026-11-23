@@ -102,20 +102,68 @@ TEST_CASE("image: rejects a truncated header and a zero SizeOfImage") {
     CHECK_THROWS_AS(Image::parse(file), FormatError);
 }
 
-TEST_CASE("image: raw data cut off by the end of the file is truncated, not rejected") {
-    std::vector<uint8_t> file = two_section_image().build();
-    // Drop the tail of the last section's raw data; the loader maps what is there.
-    file.resize(file.size() - 0x300);
-    const Image image = Image::parse(file);
-    CHECK_EQ(image.read_cstring(0x2010), std::string("hello"));
-    CHECK_EQ(image.read<uint8_t>(0x43FF), uint8_t{0});
+// Section header fields, by section index, as Windows' raw data checks read them.
+namespace {
+
+void set_raw(std::vector<uint8_t>& file, uint32_t section, uint32_t offset, uint32_t size) {
+    const size_t header = PeBuilder::kSectionTableOffset + size_t{section} * 40;
+    std::memcpy(file.data() + header + 16, &size, 4);
+    std::memcpy(file.data() + header + 20, &offset, 4);
 }
 
-TEST_CASE("image: section raw offset past the end of the file is rejected") {
+uint32_t raw_size(const std::vector<uint8_t>& file, uint32_t section) {
+    uint32_t size = 0;
+    std::memcpy(&size, file.data() + PeBuilder::kSectionTableOffset + size_t{section} * 40 + 16, 4);
+    return size;
+}
+
+} // namespace
+
+TEST_CASE("image: the last section's raw data must lie inside the file") {
+    const std::vector<uint8_t> file = two_section_image().build();
+    // Windows refuses the image when any of the last section's raw data is missing, even one
+    // byte, or when that section starts past the end of the file.
+    std::vector<uint8_t> cut = file;
+    cut.pop_back();
+    CHECK_THROWS_AS(Image::parse(cut), FormatError);
+    cut.resize(file.size() - 0x300);
+    CHECK_THROWS_AS(Image::parse(cut), FormatError);
+    std::vector<uint8_t> far = file;
+    set_raw(far, 1, 0x100000, raw_size(file, 1));
+    CHECK_THROWS_AS(Image::parse(far), FormatError);
+    // A last section without raw data isn't checked.
+    set_raw(far, 1, 0x100000, 0);
+    const Image image = Image::parse(far);
+    CHECK_EQ(image.read<uint8_t>(0x2010), uint8_t{0});
+}
+
+TEST_CASE("image: an earlier section's missing raw data reads as zero") {
+    const std::vector<uint8_t> file = two_section_image().build();
+    // .text starts past the end of the file: Windows maps it as zeros.
+    std::vector<uint8_t> past = file;
+    set_raw(past, 0, 0x100000, raw_size(file, 0));
+    const Image image = Image::parse(past);
+    CHECK_EQ(image.read<uint8_t>(0x1002), uint8_t{0});
+    CHECK_EQ(image.read_cstring(0x2010), std::string("hello"));
+    // .text starts 0x10 bytes before the end of the file: those 0x10 bytes are mapped, and the
+    // rest of its 0x30 reads as zero.
+    std::vector<uint8_t> tail = file;
+    tail.back() = 0x5A;
+    set_raw(tail, 0, static_cast<uint32_t>(tail.size() - 0x10), raw_size(file, 0));
+    const Image partial = Image::parse(tail);
+    CHECK_EQ(partial.read<uint8_t>(0x100F), uint8_t{0x5A});
+    CHECK_EQ(partial.read<uint8_t>(0x1010), uint8_t{0});
+}
+
+TEST_CASE("image: raw data may not end at or past 4 GiB") {
     std::vector<uint8_t> file = two_section_image().build();
-    const uint32_t far_away = 0x100000;
-    std::memcpy(file.data() + PeBuilder::kSectionTableOffset + 40 + 20, &far_away, 4);
+    const uint32_t size = raw_size(file, 0);
+    set_raw(file, 0, 0U - size, size);
     CHECK_THROWS_AS(Image::parse(file), FormatError);
+    set_raw(file, 0, 0U - size - 0x200, size);
+    CHECK_EQ(Image::parse(file).sections().size(), size_t{2});
+    set_raw(file, 0, 0xFFFFFFF0, 0);
+    CHECK_EQ(Image::parse(file).sections().size(), size_t{2});
 }
 
 TEST_CASE("relocations: DIR64 entries, padding skipped") {

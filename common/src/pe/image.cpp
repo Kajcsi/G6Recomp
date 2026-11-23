@@ -139,16 +139,28 @@ Image Image::parse(std::span<const uint8_t> file) {
                                           section.name, mapped_end, size_of_image));
         }
 
-        // Copy the initialized part. A last section whose SizeOfRawData was rounded up past
-        // the end of the file is truncated to the file, as the loader does.
-        uint64_t copy = std::min(section.raw_size, section.mapped_size());
-        if (copy != 0) {
-            if (section.raw_offset > reader.size()) {
-                throw FormatError(fmt::format("section {} raw data at {:#x} is past the end of "
-                                              "the file",
-                                              section.name, section.raw_offset));
+        // The raw data checks Windows makes (measured on Windows 11 26200; see "Pre-flight
+        // checks" in docs/execution-model.md): a section with no raw data isn't checked, raw
+        // data may not end at or past 4 GiB, and the last section's raw data must lie inside
+        // the file. Any other section may run or start past the end of the file, and the bytes
+        // the file lacks read as zero.
+        const uint64_t raw_end = uint64_t{section.raw_offset} + section.raw_size;
+        if (section.raw_size != 0) {
+            if (raw_end > UINT32_MAX) {
+                throw FormatError(fmt::format("section {} raw data ends at {:#x}, past 4 GiB",
+                                              section.name, raw_end));
             }
-            copy = std::min<uint64_t>(copy, reader.size() - section.raw_offset);
+            if (i + 1 == section_count && raw_end > reader.size()) {
+                throw FormatError(fmt::format("last section {} raw data ends at {:#x}, past the "
+                                              "end of the file at {:#x}",
+                                              section.name, raw_end, reader.size()));
+            }
+        }
+
+        // Copy the initialized part that the file holds.
+        const uint64_t wanted = std::min(section.raw_size, section.mapped_size());
+        if (wanted != 0 && section.raw_offset < reader.size()) {
+            const uint64_t copy = std::min<uint64_t>(wanted, reader.size() - section.raw_offset);
             std::copy_n(file.begin() + section.raw_offset, copy,
                         image.mapped_.begin() + section.virtual_address);
         }
