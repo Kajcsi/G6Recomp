@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -660,6 +661,46 @@ TEST_CASE("handles expire with their provider") {
     int64_t quota = 0;
     CHECK(XGameSaveGetRemainingQuota(nullptr, &quota) == E_INVALIDARG);
     XUserCloseHandle(user);
+}
+
+// Leonida 2cc83a80: a closed handle stays expired when a new object takes its memory.
+TEST_CASE("closed handles stay closed") {
+    const SaveRoot root;
+    const Session session;
+    REQUIRE(write(session.provider, "slot", {{"a", "1"}}) == S_OK);
+    XGameSaveContainerHandle closed = nullptr;
+    REQUIRE(XGameSaveCreateContainer(session.provider, "slot", &closed) == S_OK);
+    XGameSaveUpdateHandle closed_update = nullptr;
+    REQUIRE(XGameSaveCreateUpdate(closed, nullptr, &closed_update) == S_OK);
+    XGameSaveCloseUpdate(closed_update);
+    XGameSaveCloseContainer(closed);
+
+    // Opened and closed often, so new objects get freed memory back.
+    std::set<const void*> seen;
+    for (int i = 0; i < 64; ++i) {
+        XGameSaveContainerHandle container = nullptr;
+        REQUIRE(XGameSaveCreateContainer(session.provider, "slot", &container) == S_OK);
+        XGameSaveUpdateHandle update = nullptr;
+        REQUIRE(XGameSaveCreateUpdate(container, nullptr, &update) == S_OK);
+        CHECK(container != closed);
+        CHECK(update != closed_update);
+        CHECK(seen.insert(container).second);
+        CHECK(seen.insert(update).second);
+        XGameSaveCloseUpdate(update);
+        XGameSaveCloseContainer(container);
+    }
+    const Container live(session.provider, "slot");
+    Contents found;
+    CHECK(read(closed, {}, found) == kGameSaveHandleExpired);
+    CHECK(XGameSaveSubmitBlobWrite(closed_update, "b", bytes_of("2"), 1) == kGameSaveHandleExpired);
+    CHECK(read(live.handle, {}, found) == S_OK);
+    CHECK(found == (Contents{{"a", "1"}}));
+
+    // A handle of one kind isn't one of another, and closing it twice does nothing.
+    CHECK(XGameSaveSubmitUpdate(reinterpret_cast<XGameSaveUpdateHandle>(live.handle)) ==
+          kGameSaveHandleExpired);
+    XGameSaveCloseContainer(closed);
+    CHECK(read(live.handle, {}, found) == S_OK);
 }
 
 TEST_CASE("asynchronous updates") {

@@ -733,9 +733,23 @@ namespace {
 
 enum class Kind : uint8_t { Provider, Container, Update };
 
+// A handle isn't the object's address but an address in space reserved for handles and never
+// committed, each handed out once. So a closed handle stays expired even when a new object gets
+// the old one's memory, and a guest that reads through a handle faults at once. A call holds the
+// object while it runs, so closing a handle on another thread can't free it under the call.
+constexpr size_t kHandleSpace = size_t{64} << 20;
+constexpr uintptr_t kHandleStep = 8;
+
+struct OpenHandle {
+    Kind kind;
+    std::shared_ptr<void> object;
+};
+
 struct Handles {
     std::mutex mutex;
-    std::unordered_map<const void*, Kind> live;
+    std::unordered_map<uintptr_t, OpenHandle> live;
+    uintptr_t next = 0;
+    uintptr_t end = 0;
 };
 
 Handles& handles() {
@@ -743,53 +757,95 @@ Handles& handles() {
     return instance;
 }
 
-template <typename T>
-T* add_handle(std::unique_ptr<T> object, Kind kind) {
-    T* raw = object.release();
+// A handle value never handed out before, or 0 when no address space is left for one.
+uintptr_t new_handle_value() {
     Handles& all = handles();
     const std::scoped_lock lock(all.mutex);
-    all.live.emplace(raw, kind);
-    return raw;
+    if (all.next == all.end) {
+        const void* space = VirtualAlloc(nullptr, kHandleSpace, MEM_RESERVE, PAGE_NOACCESS);
+        if (space == nullptr) {
+            LOG_ERROR(gdk, "XGameSave: no address space left for handles (error {})",
+                      GetLastError());
+            return 0;
+        }
+        all.next = reinterpret_cast<uintptr_t>(space);
+        all.end = all.next + kHandleSpace;
+    }
+    const uintptr_t value = all.next;
+    all.next += kHandleStep;
+    return value;
+}
+
+// Opens `value` as a handle to `object`; null when `value` is 0.
+template <typename T>
+T* add_handle(uintptr_t value, std::shared_ptr<T> object, Kind kind) {
+    if (value == 0) {
+        return nullptr;
+    }
+    Handles& all = handles();
+    const std::scoped_lock lock(all.mutex);
+    all.live.emplace(value, OpenHandle{.kind = kind, .object = std::move(object)});
+    return reinterpret_cast<T*>(value);
+}
+
+template <typename T>
+T* add_handle(std::shared_ptr<T> object, Kind kind) {
+    return add_handle(new_handle_value(), std::move(object), kind);
 }
 
 // E_INVALIDARG for null, kGameSaveHandleExpired for a handle that is closed or of another kind.
-HRESULT check(const void* handle, Kind kind) {
+template <typename T>
+HRESULT find_handle(const T* handle, Kind kind, std::shared_ptr<T>& object) {
     if (handle == nullptr) {
         return E_INVALIDARG;
     }
     Handles& all = handles();
     const std::scoped_lock lock(all.mutex);
-    const auto found = all.live.find(handle);
-    return found != all.live.end() && found->second == kind ? S_OK : kGameSaveHandleExpired;
+    const auto found = all.live.find(reinterpret_cast<uintptr_t>(handle));
+    if (found == all.live.end() || found->second.kind != kind) {
+        return kGameSaveHandleExpired;
+    }
+    object = std::static_pointer_cast<T>(found->second.object);
+    return S_OK;
 }
 
-bool remove_handle(const void* handle, Kind kind) {
+// The object of an open handle, now closed; null for a handle that wasn't open.
+template <typename T>
+std::shared_ptr<T> remove_handle(const T* handle, Kind kind) {
     Handles& all = handles();
     const std::scoped_lock lock(all.mutex);
-    const auto found = all.live.find(handle);
-    if (found == all.live.end() || found->second != kind) {
-        return false;
+    const auto found = all.live.find(reinterpret_cast<uintptr_t>(handle));
+    if (found == all.live.end() || found->second.kind != kind) {
+        return nullptr;
     }
+    std::shared_ptr<T> object = std::static_pointer_cast<T>(std::move(found->second.object));
     all.live.erase(found);
-    return true;
+    return object;
 }
 
-HRESULT check_provider(XGameSaveProviderHandle provider) {
-    return check(provider, Kind::Provider);
+HRESULT find_provider(XGameSaveProviderHandle handle, Provider& state) {
+    std::shared_ptr<XGameSaveProvider> provider;
+    const HRESULT found = find_handle(handle, Kind::Provider, provider);
+    if (SUCCEEDED(found)) {
+        state = provider->state;
+    }
+    return found;
 }
 
-HRESULT check_container(XGameSaveContainerHandle container) {
-    const HRESULT checked = check(container, Kind::Container);
-    if (FAILED(checked)) {
-        return checked;
+// A container or update also expires with its provider.
+HRESULT find_container(XGameSaveContainerHandle handle,
+                       std::shared_ptr<XGameSaveContainer>& container) {
+    const HRESULT found = find_handle(handle, Kind::Container, container);
+    if (FAILED(found)) {
+        return found;
     }
     return container->provider->open ? S_OK : kGameSaveHandleExpired;
 }
 
-HRESULT check_update(XGameSaveUpdateHandle update) {
-    const HRESULT checked = check(update, Kind::Update);
-    if (FAILED(checked)) {
-        return checked;
+HRESULT find_update(XGameSaveUpdateHandle handle, std::shared_ptr<XGameSaveUpdate>& update) {
+    const HRESULT found = find_handle(handle, Kind::Update, update);
+    if (FAILED(found)) {
+        return found;
     }
     return update->provider->open ? S_OK : kGameSaveHandleExpired;
 }
@@ -868,8 +924,9 @@ HRESULT open_provider(const std::string& configuration_id, Provider& provider) {
     return S_OK;
 }
 
-XGameSaveProviderHandle new_provider(Provider state) {
-    return add_handle(std::make_unique<XGameSaveProvider>(XGameSaveProvider{std::move(state)}),
+XGameSaveProviderHandle new_provider(uintptr_t value, Provider state) {
+    return add_handle(value,
+                      std::make_shared<XGameSaveProvider>(XGameSaveProvider{std::move(state)}),
                       Kind::Provider);
 }
 
@@ -939,8 +996,12 @@ HRESULT XGameSaveInitializeProvider(XUserHandle requesting_user, const char* con
     if (SUCCEEDED(result)) {
         result = open_provider(configuration_id, state);
     }
+    const uintptr_t value = SUCCEEDED(result) ? new_handle_value() : 0;
+    if (SUCCEEDED(result) && value == 0) {
+        result = E_OUTOFMEMORY;
+    }
     if (SUCCEEDED(result)) {
-        *provider = new_provider(std::move(state));
+        *provider = new_provider(value, std::move(state));
     }
     return result;
 }
@@ -951,14 +1012,22 @@ HRESULT XGameSaveInitializeProviderAsync(XUserHandle requesting_user, const char
     if (FAILED(checked)) {
         return checked;
     }
-    auto opened = std::make_shared<Provider>();
+    // The work takes the handle value, so running out of them fails the call; the handle opens
+    // when the result is fetched.
+    auto opened = std::make_shared<std::pair<uintptr_t, Provider>>();
     auto job = std::make_unique<Job>();
     job->work = [configuration = std::string(configuration_id), opened](size_t& size) {
         size = sizeof(XGameSaveProviderHandle);
-        return open_provider(configuration, *opened);
+        const HRESULT result = open_provider(configuration, opened->second);
+        if (FAILED(result)) {
+            return result;
+        }
+        opened->first = new_handle_value();
+        return opened->first != 0 ? S_OK : E_OUTOFMEMORY;
     };
     job->fetch = [opened](void* buffer) {
-        *static_cast<XGameSaveProviderHandle*>(buffer) = new_provider(*opened);
+        *static_cast<XGameSaveProviderHandle*>(buffer) =
+            new_provider(opened->first, opened->second);
     };
     return begin_job<&XGameSaveInitializeProviderAsync>(async, "XGameSaveInitializeProviderAsync",
                                                         std::move(job));
@@ -973,15 +1042,17 @@ HRESULT XGameSaveInitializeProviderResult(XAsyncBlock* async, XGameSaveProviderH
 }
 
 void XGameSaveCloseProvider(XGameSaveProviderHandle provider) {
-    if (provider == nullptr || !remove_handle(provider, Kind::Provider)) {
+    if (provider == nullptr) {
         return;
     }
-    provider->state->open = false;
-    delete provider;
+    if (const auto closed = remove_handle(provider, Kind::Provider)) {
+        closed->state->open = false;
+    }
 }
 
 HRESULT XGameSaveGetRemainingQuota(XGameSaveProviderHandle provider, int64_t* quota) {
-    HRESULT result = check_provider(provider);
+    Provider state;
+    HRESULT result = find_provider(provider, state);
     if (SUCCEEDED(result) && quota == nullptr) {
         result = E_INVALIDARG;
     }
@@ -989,19 +1060,20 @@ HRESULT XGameSaveGetRemainingQuota(XGameSaveProviderHandle provider, int64_t* qu
         result = check_blocking("XGameSaveGetRemainingQuota");
     }
     if (SUCCEEDED(result)) {
-        *quota = remaining_quota(*provider->state);
+        *quota = remaining_quota(*state);
     }
     return result;
 }
 
 HRESULT XGameSaveGetRemainingQuotaAsync(XGameSaveProviderHandle provider, XAsyncBlock* async) {
-    const HRESULT checked = check_provider(provider);
-    if (FAILED(checked)) {
-        return checked;
+    Provider state;
+    const HRESULT found = find_provider(provider, state);
+    if (FAILED(found)) {
+        return found;
     }
     auto quota = std::make_shared<int64_t>(0);
     auto job = std::make_unique<Job>();
-    job->work = [state = provider->state, quota](size_t& size) {
+    job->work = [state = std::move(state), quota](size_t& size) {
         *quota = remaining_quota(*state);
         size = sizeof(int64_t);
         return S_OK;
@@ -1020,27 +1092,29 @@ HRESULT XGameSaveGetRemainingQuotaResult(XAsyncBlock* async, int64_t* quota) {
 }
 
 HRESULT XGameSaveDeleteContainer(XGameSaveProviderHandle provider, const char* container_name) {
-    HRESULT result = check_provider(provider);
+    Provider state;
+    HRESULT result = find_provider(provider, state);
     if (SUCCEEDED(result) && !valid_container_name(container_name)) {
         result = kGameSaveInvalidContainerName;
     }
     if (SUCCEEDED(result)) {
         result = check_blocking("XGameSaveDeleteContainer");
     }
-    return SUCCEEDED(result) ? delete_container(*provider->state, container_name) : result;
+    return SUCCEEDED(result) ? delete_container(*state, container_name) : result;
 }
 
 HRESULT XGameSaveDeleteContainerAsync(XGameSaveProviderHandle provider, const char* container_name,
                                       XAsyncBlock* async) {
-    const HRESULT checked = check_provider(provider);
-    if (FAILED(checked)) {
-        return checked;
+    Provider state;
+    const HRESULT found = find_provider(provider, state);
+    if (FAILED(found)) {
+        return found;
     }
     if (!valid_container_name(container_name)) {
         return kGameSaveInvalidContainerName;
     }
     auto job = std::make_unique<Job>();
-    job->work = [state = provider->state, name = std::string(container_name)](size_t& size) {
+    job->work = [state = std::move(state), name = std::string(container_name)](size_t& size) {
         size = 0;
         return delete_container(*state, name);
     };
@@ -1058,9 +1132,10 @@ namespace {
 // until it returns false.
 HRESULT enumerate_containers(XGameSaveProviderHandle provider, std::string_view prefix,
                              void* context, XGameSaveContainerInfoCallback* callback) {
-    const HRESULT checked = check_provider(provider);
-    if (FAILED(checked)) {
-        return checked;
+    Provider state;
+    const HRESULT found = find_provider(provider, state);
+    if (FAILED(found)) {
+        return found;
     }
     if (callback == nullptr) {
         return E_INVALIDARG;
@@ -1068,7 +1143,7 @@ HRESULT enumerate_containers(XGameSaveProviderHandle provider, std::string_view 
     std::vector<Manifest> containers;
     {
         const std::scoped_lock lock(disk_lock());
-        containers = load_containers(*provider->state);
+        containers = load_containers(*state);
     }
     for (const Manifest& manifest : containers) {
         if (!has_prefix(manifest.name, prefix)) {
@@ -1089,11 +1164,12 @@ HRESULT enumerate_containers(XGameSaveProviderHandle provider, std::string_view 
     return S_OK;
 }
 
-HRESULT enumerate_blobs(XGameSaveContainerHandle container, std::string_view prefix, void* context,
+HRESULT enumerate_blobs(XGameSaveContainerHandle handle, std::string_view prefix, void* context,
                         XGameSaveBlobInfoCallback* callback) {
-    const HRESULT checked = check_container(container);
-    if (FAILED(checked)) {
-        return checked;
+    std::shared_ptr<XGameSaveContainer> container;
+    const HRESULT found = find_container(handle, container);
+    if (FAILED(found)) {
+        return found;
     }
     if (callback == nullptr) {
         return E_INVALIDARG;
@@ -1124,9 +1200,10 @@ HRESULT enumerate_blobs(XGameSaveContainerHandle container, std::string_view pre
 
 HRESULT XGameSaveGetContainerInfo(XGameSaveProviderHandle provider, const char* container_name,
                                   void* context, XGameSaveContainerInfoCallback* callback) {
-    const HRESULT checked = check_provider(provider);
-    if (FAILED(checked)) {
-        return checked;
+    Provider state;
+    const HRESULT found = find_provider(provider, state);
+    if (FAILED(found)) {
+        return found;
     }
     if (!valid_container_name(container_name)) {
         return kGameSaveInvalidContainerName;
@@ -1138,7 +1215,7 @@ HRESULT XGameSaveGetContainerInfo(XGameSaveProviderHandle provider, const char* 
     Stored stored = Stored::Missing;
     {
         const std::scoped_lock lock(disk_lock());
-        stored = read_manifest(container_folder(*provider->state, container_name), manifest);
+        stored = read_manifest(container_folder(*state, container_name), manifest);
     }
     if (stored != Stored::Ok) {
         return stored == Stored::Missing ? kNotFound : kFileCorrupt;
@@ -1169,9 +1246,10 @@ HRESULT XGameSaveEnumerateContainerInfoByName(XGameSaveProviderHandle provider,
 
 HRESULT XGameSaveCreateContainer(XGameSaveProviderHandle provider, const char* container_name,
                                  XGameSaveContainerHandle* container) {
-    const HRESULT checked = check_provider(provider);
-    if (FAILED(checked)) {
-        return checked;
+    Provider state;
+    const HRESULT found = find_provider(provider, state);
+    if (FAILED(found)) {
+        return found;
     }
     if (!valid_container_name(container_name)) {
         return kGameSaveInvalidContainerName;
@@ -1179,15 +1257,19 @@ HRESULT XGameSaveCreateContainer(XGameSaveProviderHandle provider, const char* c
     if (container == nullptr) {
         return E_INVALIDARG;
     }
-    *container = add_handle(
-        std::make_unique<XGameSaveContainer>(XGameSaveContainer{provider->state, container_name}),
+    XGameSaveContainerHandle created = add_handle(
+        std::make_shared<XGameSaveContainer>(XGameSaveContainer{std::move(state), container_name}),
         Kind::Container);
+    if (created == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    *container = created;
     return S_OK;
 }
 
 void XGameSaveCloseContainer(XGameSaveContainerHandle container) {
-    if (container != nullptr && remove_handle(container, Kind::Container)) {
-        delete container;
+    if (container != nullptr) {
+        remove_handle(container, Kind::Container);
     }
 }
 
@@ -1219,10 +1301,11 @@ std::optional<std::vector<std::string>> requested_names(const char** blob_names,
 
 } // namespace
 
-HRESULT XGameSaveReadBlobData(XGameSaveContainerHandle container, const char** blob_names,
+HRESULT XGameSaveReadBlobData(XGameSaveContainerHandle handle, const char** blob_names,
                               uint32_t* count_of_blobs, size_t blobs_size,
                               XGameSaveBlob* blob_data) {
-    HRESULT result = check_container(container);
+    std::shared_ptr<XGameSaveContainer> container;
+    HRESULT result = find_container(handle, container);
     if (SUCCEEDED(result) && count_of_blobs == nullptr) {
         result = E_INVALIDARG;
     }
@@ -1246,11 +1329,12 @@ HRESULT XGameSaveReadBlobData(XGameSaveContainerHandle container, const char** b
     return result;
 }
 
-HRESULT XGameSaveReadBlobDataAsync(XGameSaveContainerHandle container, const char** blob_names,
+HRESULT XGameSaveReadBlobDataAsync(XGameSaveContainerHandle handle, const char** blob_names,
                                    uint32_t count_of_blobs, XAsyncBlock* async) {
-    const HRESULT checked = check_container(container);
-    if (FAILED(checked)) {
-        return checked;
+    std::shared_ptr<XGameSaveContainer> container;
+    const HRESULT found = find_container(handle, container);
+    if (FAILED(found)) {
+        return found;
     }
     auto loaded = std::make_shared<std::vector<Loaded>>();
     auto job = std::make_unique<Job>();
@@ -1284,38 +1368,44 @@ HRESULT XGameSaveReadBlobDataResult(XAsyncBlock* async, size_t blobs_size, XGame
     return result;
 }
 
-HRESULT XGameSaveCreateUpdate(XGameSaveContainerHandle container,
-                              const char* container_display_name, XGameSaveUpdateHandle* update) {
-    const HRESULT checked = check_container(container);
-    if (FAILED(checked)) {
-        return checked;
+HRESULT XGameSaveCreateUpdate(XGameSaveContainerHandle handle, const char* container_display_name,
+                              XGameSaveUpdateHandle* update) {
+    std::shared_ptr<XGameSaveContainer> container;
+    const HRESULT found = find_container(handle, container);
+    if (FAILED(found)) {
+        return found;
     }
     if (update == nullptr) {
         return E_INVALIDARG;
     }
-    auto created = std::make_unique<XGameSaveUpdate>();
-    created->provider = container->provider;
-    created->container = container->name;
+    auto object = std::make_shared<XGameSaveUpdate>();
+    object->provider = container->provider;
+    object->container = container->name;
     if (container_display_name != nullptr) {
-        created->display_name = container_display_name;
+        object->display_name = container_display_name;
     }
-    *update = add_handle(std::move(created), Kind::Update);
+    XGameSaveUpdateHandle created = add_handle(std::move(object), Kind::Update);
+    if (created == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    *update = created;
     return S_OK;
 }
 
 void XGameSaveCloseUpdate(XGameSaveUpdateHandle update) {
-    if (update != nullptr && remove_handle(update, Kind::Update)) {
-        delete update;
+    if (update != nullptr) {
+        remove_handle(update, Kind::Update);
     }
 }
 
 namespace {
 
-HRESULT add_change(XGameSaveUpdateHandle update, const char* blob_name,
+HRESULT add_change(XGameSaveUpdateHandle handle, const char* blob_name,
                    std::optional<std::vector<uint8_t>> data) {
-    const HRESULT checked = check_update(update);
-    if (FAILED(checked)) {
-        return checked;
+    std::shared_ptr<XGameSaveUpdate> update;
+    const HRESULT found = find_update(handle, update);
+    if (FAILED(found)) {
+        return found;
     }
     if (!valid_blob_name(blob_name)) {
         return E_INVALIDARG;
@@ -1334,11 +1424,7 @@ HRESULT add_change(XGameSaveUpdateHandle update, const char* blob_name,
 }
 
 // Takes the update's changes for its one submit.
-HRESULT take_changes(XGameSaveUpdateHandle update, std::vector<Change>& changes) {
-    const HRESULT checked = check_update(update);
-    if (FAILED(checked)) {
-        return checked;
-    }
+HRESULT take_changes(const std::shared_ptr<XGameSaveUpdate>& update, std::vector<Change>& changes) {
     const std::scoped_lock lock(update->mutex);
     if (update->submitted) {
         return kGameSaveHandleExpired;
@@ -1367,10 +1453,11 @@ HRESULT XGameSaveSubmitBlobDelete(XGameSaveUpdateHandle update, const char* blob
     return add_change(update, blob_name, std::nullopt);
 }
 
-HRESULT XGameSaveSubmitUpdate(XGameSaveUpdateHandle update) {
-    const HRESULT checked = check_update(update);
-    if (FAILED(checked)) {
-        return checked;
+HRESULT XGameSaveSubmitUpdate(XGameSaveUpdateHandle handle) {
+    std::shared_ptr<XGameSaveUpdate> update;
+    const HRESULT found = find_update(handle, update);
+    if (FAILED(found)) {
+        return found;
     }
     const HRESULT blocking = check_blocking("XGameSaveSubmitUpdate");
     if (FAILED(blocking)) {
@@ -1384,7 +1471,12 @@ HRESULT XGameSaveSubmitUpdate(XGameSaveUpdateHandle update) {
     return commit(*update->provider, update->container, update->display_name, changes);
 }
 
-HRESULT XGameSaveSubmitUpdateAsync(XGameSaveUpdateHandle update, XAsyncBlock* async) {
+HRESULT XGameSaveSubmitUpdateAsync(XGameSaveUpdateHandle handle, XAsyncBlock* async) {
+    std::shared_ptr<XGameSaveUpdate> update;
+    const HRESULT found = find_update(handle, update);
+    if (FAILED(found)) {
+        return found;
+    }
     auto changes = std::make_shared<std::vector<Change>>();
     const HRESULT taken = take_changes(update, *changes);
     if (FAILED(taken)) {

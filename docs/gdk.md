@@ -392,7 +392,11 @@ or empty configuration ID gives `E_GS_NO_SERVICE_CONFIGURATION` (0x80830009). Ea
 configuration ID has its own folder, so two configurations never see each other's containers.
 Closing a provider expires its containers and updates: later calls on them give
 `E_GS_HANDLE_EXPIRED` (0x8083000D), as a closed handle does. A null handle gives
-`E_INVALIDARG`. Until the runner sets the save directory, providers fail with `E_GS_NO_ACCESS`
+`E_INVALIDARG`. A handle isn't the address of our object but an address in space reserved for
+handles and never committed, and no value is handed out twice. So a closed handle stays expired
+after a new object takes the old one's memory, which Leonida found the hard way (`2cc83a80`), and
+a guest that reads through a handle faults at once. A call holds the object while it runs, so
+closing a handle on another thread doesn't free it under the call. Until the runner sets the save directory, providers fail with `E_GS_NO_ACCESS`
 (0x80830002), logged.
 
 **Containers.** Names follow the public rules: 1 to 256 characters. Up to the last `/`, only
