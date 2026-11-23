@@ -2,6 +2,7 @@
 # install, mounted read-only, or to a per-user data directory; the HLE file functions in
 # runtime/imports open files only through it.
 add_library(g6io STATIC
+    src/direct_storage.cpp
     src/file_system.cpp
     src/path.cpp)
 target_include_directories(g6io PUBLIC include)

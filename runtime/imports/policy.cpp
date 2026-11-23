@@ -25,6 +25,7 @@
 #include "g6/imports/registry.h"
 #include "g6/imports/xmem.h"
 #include "g6/input/game_input.h"
+#include "g6/io/direct_storage.h"
 #include "g6/loader/crash_report.h"
 
 namespace g6::imports {
@@ -337,6 +338,12 @@ void add_console(ImportRegistry& imports) {
     imports.stub_dll("gameinput.dll", StubResult::hresult());
     imports.hle("gameinput.dll", Symbol::by_ordinal(1),
                 reinterpret_cast<const void*>(&input::GameInputCreate));
+    // DirectStorage: the executable imports only DStorageGetFactory, and asserts unless it gets
+    // a factory; runtime/io's stand-in, until it serves requests.
+    imports.stub_dll("xcrdapi.dll", StubResult::hresult());
+    imports.hle("xcrdapi.dll", Symbol::by_name("DStorageGetFactory"),
+                reinterpret_cast<const void*>(&io::DStorageGetFactory));
+
     // D3D12.X, until runtime/gpu wraps it, but for what the executable calls before the device.
     imports.stub_dll("d3d12_xs.dll", StubResult::hresult());
     d3d12_xs::register_d3d12_xs(imports);

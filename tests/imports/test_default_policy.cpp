@@ -261,6 +261,16 @@ TEST_CASE("GameInputCreate is our stand-in, and the rest of GameInput an HRESULT
     CHECK_EQ(resolution.stub.value, kNotImplemented);
 }
 
+TEST_CASE("DStorageGetFactory is ours, and the rest of xcrdapi an HRESULT stub") {
+    ImportRegistry policy = default_game_policy();
+    Resolution resolution = policy.resolve("xcrdapi.dll", Symbol::by_name("DStorageGetFactory"));
+    CHECK(resolution.binding == Binding::Hle);
+    CHECK(resolution.address != nullptr);
+    resolution = policy.resolve("XCRDAPI.dll", Symbol::by_name("DStorageGetFactoryX"));
+    CHECK(resolution.binding == Binding::Stub);
+    CHECK_EQ(resolution.stub.value, kNotImplemented);
+}
+
 TEST_CASE("the default policy forwards nothing to a networking DLL") {
     ImportRegistry policy = default_game_policy();
     for (const char* dll : {"ws2_32.dll", "winhttp.dll", "wininet.dll", "xcurl.dll",

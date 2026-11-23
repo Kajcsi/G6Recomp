@@ -336,7 +336,7 @@ add_dependencies(test_exe_tls ga_guest)
 # ---- Import policy and HLE ----
 
 g6_add_test(test_io LABEL nogame
-    SOURCES io/test_paths.cpp io/test_file_system.cpp
+    SOURCES io/test_paths.cpp io/test_file_system.cpp io/test_direct_storage.cpp
     LIBS g6io)
 
 g6_add_test(test_imports LABEL nogame
