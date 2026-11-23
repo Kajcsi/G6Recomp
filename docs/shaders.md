@@ -353,7 +353,28 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       51,327 and bit 0 in 4,610. Bit 3 is set in 11,659 records, and bit 4 in 11,239 of those.
       The values are 1 (4,214), 2 (40,064), 9 (396), 10 (24), and 26 (11,239), so a test for a
       flat input has to look at bit 0, not compare the byte with 1.
-    * Byte 5 is nonzero in 11,069 records, all with bit 4 set. What it holds isn't worked out.
+    * Byte 5 is nonzero in 11,069 records, all with bit 4 set. **Checked here** (decoder,
+      `check_f16_inputs`): it names the second register packed into an f16 attribute.
+      * Bit 3 marks f16 values. With bit 3 alone (flags 9 or 10), the record's register has one
+        f16 per channel, in the low half. With bit 4 as well (flags 26), each channel holds two
+        halves, so the attribute has eight slots: channel c's low half is slot 2c, its high
+        half slot 2c + 1. Byte 2 is 3 in every packed record.
+      * Byte 1's register fills the slots from 0, one declared component each. A second
+        register starts at the next whole channel, slot 2 × ⌈n / 2⌉, where n is byte 1's
+        highest declared component plus one. A register with x, y and z puts its partner's x in
+        channel 2's low half.
+      * The partner is byte 5's register in the 9,859 packed records where byte 5 differs from
+        byte 1. In the other 1,380, byte 5 repeats byte 1 (both are 0 in 170). There the
+        partner, if any, is the program's one f16 input register that the shader reads, that no
+        record names, and that isn't a system value, and n counts only the elements the shader
+        reads. 184 programs have such a register, always byte 1's register plus one. In 170 of
+        them byte 1's register declares x to w but the shader reads only its xy element, and
+        the partner starts at slot 2, not 4.
+      * Of the 59,191 distinct attribute, channel and half each program's f16 interpolations
+        read, 59,185 land on a component the signature marks read and none on an unread one.
+        The other 6 are in 6 programs that read slot 6 of an attribute whose registers fill
+        slots 0 to 5 (byte 1's x to w, byte 5's x and y). What sits there isn't worked out.
+        The f16 interpolations read only records with bit 3, 24 of them unpacked.
     * xcl reads byte 6 as the register again. Here it differs from byte 1 in 22,168 records,
       usually by one to five lower, so don't rely on it.
   * Leonida reports what the flag bits mean: bit 0 marks a position the code reads with
@@ -378,7 +399,8 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
     bits 0 to 5 of the first source field, the channel in bits 6 and 7, and `high` in bit 8.
     p1ll and p2 always agree on attribute, channel and `high`, and 4,731 of the 4,776 programs
     that use `high` read both halves of the same channel. xbox-emulator and xcl decode only
-    the attribute and channel, and xcl never reads bit 8.
+    the attribute and channel, and xcl never reads bit 8. Our decoder reads all three
+    (`rdna2::interp_attribute`), and the disassembly prints them as `attrN.c high`.
   * **Which attribute is which** (xbox-emulator, a guess that still fails on one Trackmania
     shader): attribute k is the k-th input register holding a value that isn't a system value.
     A register counts if any element in it is read, even a system value that shares it.

@@ -180,6 +180,7 @@ TEST_CASE("every native program decodes as RDNA 2 to the end of its code") {
     size_t outside_programs = 0;
     std::map<uint8_t, sh::StageInputs> inputs;
     sh::GsOutputCheck gs_output;
+    sh::F16InputCheck f16_inputs;
     sh::take_census(archive.bytes(), [&](const sh::CensusShader& shader) {
         const std::vector<sh::SignatureElement> signature =
             sh::input_signature(shader.record.container);
@@ -197,8 +198,22 @@ TEST_CASE("every native program decodes as RDNA 2 to the end of its code") {
                 interpolating += check.instructions > 0 ? 1 : 0;
                 outside_programs += check.outside > 0 ? 1 : 0;
             }
+            if (const auto records = sh::fssm_ps_input_table(fssm)) {
+                sh::check_f16_inputs(f16_inputs, program, *records, signature);
+            }
         }
     });
+    // The f16 interpolations read only f16 input records, and the packing rule in census.h puts
+    // all but 6 of their reads on a component the shader reads. Those 6, one per program, read
+    // the low half of channel 3 of an attribute whose two registers fill only slots 0 to 5.
+    CHECK_EQ(f16_inputs.packed_records, size_t{11239});
+    CHECK_EQ(f16_inputs.named_partners, size_t{9859});
+    CHECK_EQ(f16_inputs.unnamed_partners, size_t{184});
+    CHECK_EQ(f16_inputs.reads, size_t{59191});
+    CHECK_EQ(f16_inputs.on_read, size_t{59185});
+    CHECK_EQ(f16_inputs.on_unread, size_t{0});
+    CHECK_EQ(f16_inputs.outside, size_t{6});
+    CHECK_EQ(f16_inputs.not_f16, size_t{0});
     // Pixel programs interpolate from the I and J registers their input enable word loads. The
     // one exception copies the J register to another VGPR first and interpolates from the copy.
     CHECK_EQ(interpolating, size_t{10260});

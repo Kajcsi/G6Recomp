@@ -351,6 +351,7 @@ int cmd_scan(const std::filesystem::path& file, std::span<const std::string_view
     size_t interpolating = 0;
     size_t interpolation_fits = 0;
     std::vector<size_t> outside_shaders;
+    shader::F16InputCheck f16_inputs;
     const shader::MappedFile archive(file);
     const shader::Census census =
         shader::take_census(archive.bytes(), [&](const shader::CensusShader& shader) {
@@ -391,6 +392,9 @@ int cmd_scan(const std::filesystem::path& file, std::span<const std::string_view
                             outside_shaders.push_back(number);
                         }
                     }
+                    if (const auto records = shader::fssm_ps_input_table(fssm)) {
+                        shader::check_f16_inputs(f16_inputs, program, *records, signature);
+                    }
                 } catch (const shader::FormatError& error) {
                     if (undecodable++ == 0) {
                         LOG_WARN(shaderrecomp, "shader {}: {}", number, error.what());
@@ -426,6 +430,12 @@ int cmd_scan(const std::filesystem::path& file, std::span<const std::string_view
         interpolation.outside,
         outside_shaders.empty() ? ""
                                 : fmt::format(" (shaders {})", fmt::join(outside_shaders, ", ")));
+    fmt::print("                 f16 inputs: {} packed records, {} with a second register in byte "
+               "5, {} programs with an unnamed one; of {} f16 reads, {} land on read components, "
+               "{} on unread ones, {} on none, {} on records that aren't f16\n",
+               f16_inputs.packed_records, f16_inputs.named_partners, f16_inputs.unnamed_partners,
+               f16_inputs.reads, f16_inputs.on_read, f16_inputs.on_unread, f16_inputs.outside,
+               f16_inputs.not_f16);
     print_decode(decode_stats, undecodable);
     print_inputs(stage_inputs, setup_outside_shaders);
     fmt::print(

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <span>
@@ -776,6 +777,103 @@ TEST_CASE("pixel interpolation is checked against the enable word") {
     CHECK_EQ(vop3.instructions, size_t{2});
     CHECK_EQ(vop3.vop3, size_t{2});
     CHECK_EQ(vop3.outside, size_t{1}); // v6
+}
+
+TEST_CASE("f16 interpolations are placed by the packing rule") {
+    namespace r = sh::rdna2;
+    constexpr uint32_t kFloat16 = 6; // D3D's component types
+    constexpr uint32_t kFloat32 = 3;
+    const auto element = [](uint32_t reg, uint32_t type, uint8_t mask, uint8_t rw,
+                            uint32_t system_value = 0) {
+        sh::SignatureElement e;
+        e.system_value = system_value;
+        e.component_type = type;
+        e.reg = reg;
+        e.mask = mask;
+        e.rw_mask = rw;
+        return e;
+    };
+    const auto record = [](uint8_t reg, uint8_t byte5, uint8_t flags) {
+        sh::PsInputRecord rec;
+        rec.reg = reg;
+        rec.byte5 = byte5;
+        rec.flags = flags;
+        return rec;
+    };
+    // v_interp_p1ll_f16 v0, v0, attrN.c [high]: src0 holds the attribute in bits 0-5, the
+    // channel in 6-7 and the high half in bit 8; src1 the I (v0).
+    struct Read {
+        unsigned attribute;
+        unsigned channel;
+        bool high;
+    };
+    const auto program = [](std::initializer_list<Read> reads) {
+        Bytes code;
+        for (const Read& read : reads) {
+            put32(code, 0xD4000000U | (uint32_t{r::kVop3InterpP1llF16} << 16));
+            put32(code,
+                  read.attribute | (read.channel << 6) | (read.high ? 0x100U : 0U) | (0x100U << 9));
+        }
+        put32(code, 0xBF810000); // s_endpgm
+        return r::decode_program(code);
+    };
+
+    // A named partner. Record 0 packs register 0 (xyz) in slots 0-2 and, from byte 5, register 1
+    // (xy, x read) from slot 4. Record 1 is f16 but not packed; record 2 isn't f16.
+    const std::vector<sh::SignatureElement> named_signature = {
+        element(0, kFloat16, 0x7, 0x7), element(1, kFloat16, 0x3, 0x1),
+        element(3, kFloat16, 0x3, 0x3), element(4, kFloat32, 0x1, 0x1)};
+    const std::vector<sh::PsInputRecord> named_records = {record(0, 1, 0x1A), record(3, 0, 0x0A),
+                                                          record(4, 0, 0x02)};
+    sh::F16InputCheck named;
+    sh::check_f16_inputs(named,
+                         program({{0, 0, false},   // slot 0: register 0 x
+                                  {0, 0, false},   // the same read again counts once
+                                  {0, 1, false},   // slot 2: register 0 z
+                                  {0, 2, false},   // slot 4: register 1 x
+                                  {0, 2, true},    // slot 5: register 1 y, not read
+                                  {0, 1, true},    // slot 3: between the two registers
+                                  {1, 1, false},   // unpacked: register 3 y
+                                  {1, 1, true},    // unpacked records have no high halves
+                                  {2, 0, false},   // not f16
+                                  {5, 0, false}}), // past the table
+                         named_records, named_signature);
+    CHECK_EQ(named.packed_records, size_t{1});
+    CHECK_EQ(named.named_partners, size_t{1});
+    CHECK_EQ(named.unnamed_partners, size_t{0});
+    CHECK_EQ(named.reads, size_t{9});
+    CHECK_EQ(named.on_read, size_t{4});
+    CHECK_EQ(named.on_unread, size_t{1});
+    CHECK_EQ(named.outside, size_t{2});
+    CHECK_EQ(named.not_f16, size_t{2});
+
+    // An unnamed partner: byte 5 repeats byte 1, so the partner is the one f16 register the
+    // shader reads that no record names (2), placed after register 0's read elements (xy) rather
+    // than all its declared ones. A system value is never the partner.
+    std::vector<sh::SignatureElement> unnamed_signature = {
+        element(0, kFloat16, 0x3, 0x3), element(0, kFloat16, 0xC, 0x0),
+        element(2, kFloat16, 0x1, 0x1), element(3, kFloat16, 0xF, 0xF, 1)};
+    const std::vector<sh::PsInputRecord> unnamed_records = {record(0, 0, 0x1A)};
+    const r::Program unnamed_program = program({{0, 0, true},   // slot 1: register 0 y
+                                                {0, 1, false},  // slot 2: register 2 x
+                                                {0, 1, true}}); // slot 3: register 2 has no y
+    sh::F16InputCheck unnamed;
+    sh::check_f16_inputs(unnamed, unnamed_program, unnamed_records, unnamed_signature);
+    CHECK_EQ(unnamed.packed_records, size_t{1});
+    CHECK_EQ(unnamed.named_partners, size_t{0});
+    CHECK_EQ(unnamed.unnamed_partners, size_t{1});
+    CHECK_EQ(unnamed.on_read, size_t{2});
+    CHECK_EQ(unnamed.outside, size_t{1});
+
+    // With two candidates there is no partner, so register 0 keeps all four declared slots and
+    // slots 2 and 3 land on its unread z and w.
+    unnamed_signature.push_back(element(5, kFloat16, 0x1, 0x1));
+    sh::F16InputCheck ambiguous;
+    sh::check_f16_inputs(ambiguous, unnamed_program, unnamed_records, unnamed_signature);
+    CHECK_EQ(ambiguous.unnamed_partners, size_t{0});
+    CHECK_EQ(ambiguous.on_read, size_t{1});
+    CHECK_EQ(ambiguous.on_unread, size_t{2});
+    CHECK_EQ(ambiguous.outside, size_t{0});
 }
 
 TEST_CASE("malformed containers throw") {

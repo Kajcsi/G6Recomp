@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <bitset>
 #include <string_view>
 #include <utility>
@@ -185,6 +186,117 @@ InterpolationCheck check_interpolation(const rdna2::Program& program, const PsIn
         }
     }
     return check;
+}
+
+namespace {
+
+// One input register's elements in the signature, merged.
+struct InputRegister {
+    uint8_t mask = 0;          // declared components
+    uint8_t rw_mask = 0;       // components the shader reads
+    uint8_t read_elements = 0; // declared components of the elements the shader reads
+    bool sixteen_bit = false;
+    bool system_value = false;
+};
+
+// The component types D3D's signatures give 16-bit values: uint16, sint16 and float16.
+bool sixteen_bit(uint32_t component_type) {
+    return component_type >= 4 && component_type <= 6;
+}
+
+unsigned width(uint8_t mask) {
+    return static_cast<unsigned>(std::bit_width(mask));
+}
+
+} // namespace
+
+void check_f16_inputs(F16InputCheck& check, const rdna2::Program& program,
+                      std::span<const PsInputRecord> records,
+                      std::span<const SignatureElement> signature) {
+    constexpr uint8_t kF16 = 0x08;    // flags bit 3
+    constexpr uint8_t kPacked = 0x10; // flags bit 4
+    std::map<uint32_t, InputRegister> registers;
+    for (const SignatureElement& element : signature) {
+        InputRegister& reg = registers[element.reg];
+        reg.mask |= element.mask;
+        reg.rw_mask |= element.rw_mask;
+        reg.read_elements |= element.rw_mask != 0 ? element.mask : 0;
+        reg.sixteen_bit = reg.sixteen_bit || sixteen_bit(element.component_type);
+        reg.system_value = reg.system_value || element.system_value != 0;
+    }
+    std::set<uint32_t> named;
+    for (const PsInputRecord& record : records) {
+        named.insert(record.reg);
+        if ((record.flags & kPacked) != 0) {
+            named.insert(record.byte5);
+            ++check.packed_records;
+            check.named_partners += record.byte5 != record.reg ? 1 : 0;
+        }
+    }
+    std::optional<uint32_t> unnamed;
+    size_t unnamed_count = 0;
+    for (const auto& [number, reg] : registers) {
+        if (reg.sixteen_bit && !reg.system_value && reg.rw_mask != 0 && !named.contains(number)) {
+            unnamed = number;
+            ++unnamed_count;
+        }
+    }
+    if (unnamed_count != 1) {
+        unnamed.reset();
+    }
+    check.unnamed_partners += unnamed ? 1 : 0;
+
+    std::set<std::array<uint8_t, 3>> reads;
+    for (const rdna2::Instruction& insn : program.instructions) {
+        if (insn.encoding != rdna2::Encoding::kVop3 ||
+            (insn.opcode != rdna2::kVop3InterpP1llF16 && insn.opcode != rdna2::kVop3InterpP1lvF16 &&
+             insn.opcode != rdna2::kVop3InterpP2F16)) {
+            continue;
+        }
+        if (const auto attr = rdna2::interp_attribute(insn)) {
+            reads.insert({attr->attribute, attr->channel, static_cast<uint8_t>(attr->high)});
+        }
+    }
+    const auto component_of = [&](const PsInputRecord& record, unsigned channel,
+                                  bool high) -> std::optional<std::pair<uint32_t, unsigned>> {
+        if ((record.flags & kPacked) == 0) {
+            return high ? std::nullopt : std::optional(std::pair{uint32_t{record.reg}, channel});
+        }
+        const unsigned slot = (2 * channel) + (high ? 1 : 0);
+        std::optional<uint32_t> partner;
+        unsigned first = width(registers[record.reg].mask);
+        if (record.byte5 != record.reg) {
+            partner = record.byte5;
+        } else if (unnamed) {
+            partner = unnamed;
+            first = width(registers[record.reg].read_elements);
+        }
+        const unsigned start = 2 * ((first + 1) / 2);
+        if (slot < first) {
+            return std::pair{uint32_t{record.reg}, slot};
+        }
+        if (partner && slot >= start) {
+            return std::pair{*partner, slot - start};
+        }
+        return std::nullopt;
+    };
+    for (const auto& [attribute, channel, high] : reads) {
+        ++check.reads;
+        if (attribute >= records.size() || (records[attribute].flags & kF16) == 0) {
+            ++check.not_f16;
+            continue;
+        }
+        const auto at = component_of(records[attribute], channel, high != 0);
+        const InputRegister reg = at ? registers[at->first] : InputRegister{};
+        const unsigned component = at ? at->second : 0;
+        if (at && component < 4 && ((reg.rw_mask >> component) & 1) != 0) {
+            ++check.on_read;
+        } else if (at && component < 4 && ((reg.mask >> component) & 1) != 0) {
+            ++check.on_unread;
+        } else {
+            ++check.outside;
+        }
+    }
 }
 
 ComputeSetup compute_setup(uint32_t rsrc2) {

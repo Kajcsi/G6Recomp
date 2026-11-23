@@ -97,6 +97,33 @@ struct InterpolationCheck {
 };
 InterpolationCheck check_interpolation(const rdna2::Program& program, const PsInputs& inputs);
 
+// Where the f16 interpolations (v_interp_p1ll_f16, p1lv_f16, p2_f16) read in the shader's input
+// signature. An input record with flags bit 3 holds f16 values. With bit 3 alone, the register
+// byte 1 names has one f16 per channel, in the low half. With bit 4 as well the record is packed:
+// each channel holds two halves, so the attribute has eight slots, slot = 2 * channel + high.
+//   * The register byte 1 names fills the slots from 0, one component each.
+//   * A second register starts at the next whole channel, slot 2 * ceil(n / 2), where n is the
+//     first register's highest declared component plus one.
+//   * The second register is the one byte 5 names when it differs from byte 1. When byte 5
+//     repeats byte 1, it is the program's only f16 input register that the shader reads and no
+//     record names, if there is one; n then counts only the elements the shader reads.
+// The rule is fitted to 1.0.2.1's programs (docs/shaders.md).
+struct F16InputCheck {
+    size_t packed_records = 0;   // input records with flags bit 4
+    size_t named_partners = 0;   // of those, the ones whose byte 5 names a second register
+    size_t unnamed_partners = 0; // programs with an unnamed second register
+    size_t reads = 0;            // distinct attribute, channel and half each program reads
+    size_t on_read = 0;          // land on a component the signature marks read
+    size_t on_unread = 0;        // land on a declared component it doesn't mark read
+    size_t outside = 0;          // land on no component of either register
+    size_t not_f16 = 0;          // read a record without flags bit 3, or one past the table
+};
+// Adds a pixel program, with its input table (fssm_ps_input_table) and its shader's input
+// signature (ISG1).
+void check_f16_inputs(F16InputCheck& check, const rdna2::Program& program,
+                      std::span<const PsInputRecord> records,
+                      std::span<const SignatureElement> signature);
+
 // What a compute wave starts with, from COMPUTE_PGM_RSRC2 in AMD's public register reference: the
 // user SGPRs from s0, then the workgroup IDs X, Y and Z, the thread-group info and the scratch
 // offset, each only if enabled; and the thread IDs in v0, v1 and v2, up to the count enabled.

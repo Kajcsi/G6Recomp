@@ -178,9 +178,9 @@ struct PsInputRecord {
     uint8_t mask = 0;      // byte 2: the components
     uint8_t attribute = 0; // byte 3: N again
     uint8_t byte4 = 0;     // zero
-    uint8_t byte5 = 0;     // nonzero only on f16-packed inputs; meaning not worked out
+    uint8_t byte5 = 0;     // packed f16: the second register (check_f16_inputs in census.h)
     uint8_t byte6 = 0;     // xcl reads it as the register again; often one to five lower here
-    uint8_t flags = 0;     // byte 7: bit 0 flat, bit 1 interpolated; bits 3 and 4 f16 (Leonida)
+    uint8_t flags = 0;     // byte 7: bit 0 flat, bit 1 interpolated, bit 3 f16, bit 4 packed f16
 };
 // Nothing when the image isn't layout 6 with PS first, or the count is out of range.
 std::optional<std::vector<PsInputRecord>> fssm_ps_input_table(std::span<const uint8_t> fssm);
