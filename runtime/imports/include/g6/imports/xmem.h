@@ -86,6 +86,11 @@ inline constexpr uint64_t kSeriesXTitleMemory = uint64_t{27} << 29;
 // so every allocator reports the whole title.
 BOOL XMemGetWorkingSetStatistics(uint64_t attributes, XMemWorkingSetStatistics* statistics);
 
+// Moves `size` bytes of the console's memory budget in the direction `direction` names (the main
+// executable passes 1 and 16 MiB once, at start; Leonida found the call). The host has no fixed
+// budget to move between, so it succeeds and changes nothing.
+BOOL XMemTransferMemory(uint32_t direction, size_t size);
+
 // Binds xmem.dll's imports to the functions above.
 void register_xmem(loader::ImportRegistry& imports);
 

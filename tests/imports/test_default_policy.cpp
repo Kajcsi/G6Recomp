@@ -210,7 +210,8 @@ TEST_CASE("the registry reads the GDK thunk makes, and the xmem queries, are HLE
             CHECK(resolution.address != host_function(L"advapi32.dll", name));
         }
     }
-    for (const char* name : {"XMemVirtualQuery", "XMemGetWorkingSetStatistics"}) {
+    for (const char* name :
+         {"XMemVirtualQuery", "XMemGetWorkingSetStatistics", "XMemTransferMemory"}) {
         INFO(name);
         const Resolution resolution = policy.resolve("xmem.dll", Symbol::by_name(name));
         CHECK(resolution.binding == Binding::Hle);

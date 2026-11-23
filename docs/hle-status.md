@@ -158,10 +158,14 @@ follow SlimEra's public reference ([related-work.md](related-work.md)).
 | `XMemAlloc` | partial | Heap memory type: a dedicated host heap, aligned to the larger of 16 and the requested alignment, and zeroed. Graphics and physical types log once and return null until `memory_tracker` exists. |
 | `XMemFree` | implemented | Looks the address up. Null is ignored; a pointer that isn't a live allocation is logged once and ignored, not freed. |
 | `XMemVirtualQuery` | partial | `(process, address, info)`, as the BVH builder calls it. Fills the host's `MEMORY_BASIC_INFORMATION` and, at +48, GPU access bits: bit 0 for committed, readable memory without a guard, since `memory_tracker` will be able to sync any of it. The caller accepts either of bits 0–1 as GPU memory; what each means is unknown. Bytes past +52 are never written. |
-| `XMemGetWorkingSetStatistics` | partial | `(attributes, stats)`, as the FSR upscaler calls it with a 128-byte buffer, reading +8. Writes only +0, the title's memory limit (13.5 GiB, a Series X), and +8, the process's private bytes capped at that limit; the allocator in `attributes` is ignored. The structure's size differs between GDK versions, so writing more could overrun an older caller's (xcl found this). |
+| `XMemGetWorkingSetStatistics` | partial | `(attributes, stats)`, as the FSR upscaler calls it with a 128-byte buffer, reading +8. Writes only +0, the title's memory limit (13.5 GiB, a Series X), and +8, the process's private bytes capped at that limit; the allocator in `attributes` is ignored. The structure's size differs between GDK versions, so writing more could overrun an older caller's (xcl found this). **Reported** by Xbox2Windows: +8 is the GPU memory in use, which it reads from DXGI's `QueryVideoMemoryInfo`, counting each adapter LUID once. Not taken yet: until `memory_tracker` owns GPU memory, private bytes are the closest count. |
+| `XMemTransferMemory` | implemented | `(direction, size)`. The executable calls it once at start with 1 and 16 MiB (Leonida found the call). It succeeds and moves nothing, since a PC process has no title and system partitions to move memory between. |
 
-Only the two replaced DLLs import the last two; they are here for the main executable, which
-links the same GDK.
+Only the BVH builder, which is replaced, imports `XMemVirtualQuery`. **Checked here:** the
+executable imports 12 xmem functions: `XMemAlloc`, `XMemFree`, `XMemGetWorkingSetStatistics`
+and `XMemTransferMemory` above, and `XMemVirtualAlloc`, the four physical-page functions
+(allocate, free, map, and scattered map), `XMemAllocDefault`, `XMemFreeDefault` and
+`XMemIsToolsMemAvailable`, which come with the first boot runs.
 
 Reported by xbox-emulator, for when the main executable imports it: Trackmania calls
 `XMemGetWin32HeapStatistics` on the process heap, subtracts the sum of the first two fields

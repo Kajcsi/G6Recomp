@@ -177,3 +177,9 @@ TEST_CASE("XMemGetWorkingSetStatistics writes the limit and usage, and nothing e
                       [](uint64_t word) { return word == 0xEEEEEEEEEEEEEEEE; }));
     CHECK(XMemGetWorkingSetStatistics(0, nullptr) == FALSE);
 }
+
+TEST_CASE("XMemTransferMemory succeeds and moves nothing") {
+    using g6::imports::xmem::XMemTransferMemory;
+    CHECK(XMemTransferMemory(1, size_t{16} << 20) != FALSE);
+    CHECK(XMemTransferMemory(0, 0) != FALSE);
+}

@@ -154,6 +154,11 @@ BOOL XMemGetWorkingSetStatistics(uint64_t /*attributes*/, XMemWorkingSetStatisti
     return TRUE;
 }
 
+BOOL XMemTransferMemory(uint32_t direction, size_t size) {
+    LOG_DEBUG(xmem, "XMemTransferMemory({}, {:#x}): nothing to move on the host", direction, size);
+    return TRUE;
+}
+
 void register_xmem(loader::ImportRegistry& imports) {
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemAlloc"),
                 reinterpret_cast<const void*>(&XMemAlloc));
@@ -163,6 +168,8 @@ void register_xmem(loader::ImportRegistry& imports) {
                 reinterpret_cast<const void*>(&XMemVirtualQuery));
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemGetWorkingSetStatistics"),
                 reinterpret_cast<const void*>(&XMemGetWorkingSetStatistics));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemTransferMemory"),
+                reinterpret_cast<const void*>(&XMemTransferMemory));
 }
 
 } // namespace g6::imports::xmem
