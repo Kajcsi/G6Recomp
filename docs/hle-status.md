@@ -95,6 +95,14 @@ provides without a guest module gets a pseudo handle (see "The loader" in
 | `GetModuleFileNameA`, `GetModuleFileNameW` | implemented | The path a guest module was mapped from, or the DLL name for a pseudo handle; null gives the guest executable. Truncates and sets `ERROR_INSUFFICIENT_BUFFER` like Windows. |
 | `RtlPcToFileHeader` | implemented | Guest modules first, then the host's answer. The C++ runtime's throw uses it to find the image base of its type information. |
 
+The crash report's own function, which `register_crash_report` binds for imports from
+`api-ms-win-core-errorhandling-*`, `kernel32.dll`, and `kernelbase.dll`
+([execution-model.md](execution-model.md), "Crash reports").
+
+| Function | Status | Notes |
+|---|---|---|
+| `SetUnhandledExceptionFilter` | implemented | Keeps the guest's filter instead of installing it and returns the one it kept before. The first call installs the crash report, whose filter calls the guest's after logging; when the guest's returns `EXCEPTION_CONTINUE_SEARCH`, the host's filter from before the report gets the exception. An executable's C runtime startup installs a filter before `main`. |
+
 Other ways to look up a module or function exist: `GetProcAddressForCaller`,
 `LoadPackagedLibrary`, and ntdll's `LdrGetProcedureAddress`, `LdrGetProcedureAddressEx`,
 `LdrLoadDll`, and `LdrGetDllHandle`. xbox-emulator had to route each of them
@@ -111,7 +119,7 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 | Imports | Status | Notes |
 |---|---|---|
 | `api-ms-win-crt-*` | forwarded | The host Universal CRT. The common path functions and the exit functions are HLE (`runtime/imports/ucrtbase`), and so are the argument functions (`runtime/imports`, "the command line", below); the remaining path, process, and DLL-loading functions are stubbed by name: `-1`, null, or `ENOSYS`, by what each returns on failure. The whole `process` and `private` sets are stubbed. |
-| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`), and so are `GetCommandLineA` and `GetCommandLineW` (below). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
+| `api-ms-win-core-*` families: console, debug, errorhandling, fibers, handle, heap, interlocked, localization, processenvironment, processthreads, processtopology, profile, rtlsupport, string, synch, sysinfo, threadpool, util | forwarded | The current-directory functions are HLE (`runtime/imports/kernelbase`), and so are `GetCommandLineA` and `GetCommandLineW` (below) and `SetUnhandledExceptionFilter` (`runtime/loader`, above). `CreateProcess*`, `OpenProcess`, `SearchPath`, and `NeedCurrentDirectoryForExePath` are stubbed. Thread creation and affinity become HLE with the console core layout in `runtime/kernel`. |
 | `api-ms-win-core-libraryloader-*` | implemented | The loader's HLE (above). The resource functions are forwarded: a guest handle is a mapped image. |
 | `api-ms-win-core-file-*` (and the same names from `kernel32`, `kernelbase`) | partial | Functions that take a handle are forwarded. The common path functions are HLE on `runtime/io` (`runtime/imports/kernelbase`). The other path functions stay stubbed: `INVALID_HANDLE_VALUE` for `CreateFile3` and the other `FindFirst` families, `INVALID_FILE_SIZE` for `GetCompressedFileSize`, zero otherwise. |
 | `api-ms-win-core-registry-*` (and the same four names from `advapi32`) | partial | Reading the console-mode key is HLE (`runtime/imports/kernelbase`, below). Everything else returns `ERROR_CALL_NOT_IMPLEMENTED` as the status. Of the mapped side DLLs only `msvcp140_atomic_wait` imports it, for the leap-second key; the GDK thunk in `XCurl` and `libHttpClient.GDK` (never mapped) imports the four HLE functions. |

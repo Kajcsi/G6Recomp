@@ -313,13 +313,20 @@ exception to the filter that was there before, so the process ends, or a debugge
 it would have. A stack overflow is reported from a thread of its own, since little of the
 faulting thread's stack is left; the faulting thread waits for it, at most ten seconds.
 
-Still open: `SetUnhandledExceptionFilter` is forwarded, so a guest that installs its own filter
-replaces ours. If the main executable does, the function needs an HLE entry that keeps the
-guest's filter and has ours call it after the report.
+A guest that installed a top-level filter of its own would replace ours, and every MSVC
+executable does: **checked here** on original `/MD` programs built by clang-cl and `cl.exe`,
+the filter in place when `main` starts is in the executable, installed by its C runtime
+startup. So the guest's `SetUnhandledExceptionFilter` is HLE (`register_crash_report`, in the
+default policy): it keeps the guest's filter instead of installing it, returns the one the
+guest kept before, and installs the report's filter on the first call. After its report, our
+filter calls the guest's; when that returns `EXCEPTION_CONTINUE_SEARCH`, the filter from before
+ours gets the exception. A guest's call to `UnhandledExceptionFilter` itself stays forwarded and
+reaches the same filters.
 
 Tested by `test_crash_report` on an original optimized DLL: a fault in a leaf without unwind
 data two guest frames down, a walk from a host callback the guest called, a C++ exception's
-type, and the installed filter handing the exception on.
+type, the installed filter handing the exception on, and a filter the guest installs running
+after the report.
 
 ## What stays recompiled
 

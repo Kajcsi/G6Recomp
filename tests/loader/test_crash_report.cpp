@@ -1,7 +1,8 @@
 // Crash reports (g6/loader/crash_report.h) on an original guest DLL (tests/fixtures/stack_guest):
 // the stack walk gets through guest frames, those with unwind data and a leaf without, the report
-// names the guest module and the address at its preferred base, and the installed filter logs
-// the report and hands the exception on. Plan: docs/execution-model.md, "Crash reports".
+// names the guest module and the address at its preferred base, the installed filter logs the
+// report and hands the exception on, and a filter the guest installs is kept and runs after the
+// report. Plan: docs/execution-model.md, "Crash reports".
 
 #include <array>
 #include <cstdint>
@@ -35,10 +36,12 @@ constexpr std::string_view kGuest = "stack_guest.dll";
 
 using StoreFn = int (*)(volatile int*);
 using CallFn = int (*)(G6StackCallback, void*);
+using SetFilterFn = LPTOP_LEVEL_EXCEPTION_FILTER (*)(LPTOP_LEVEL_EXCEPTION_FILTER);
 
 LoaderOptions make_options() {
     LoaderOptions options;
     options.search_paths.emplace_back(G6_STACK_GUEST_DIR);
+    g6::loader::register_crash_report(options.imports);
     return options;
 }
 
@@ -162,6 +165,15 @@ LONG call_installed(EXCEPTION_POINTERS* exception, void* context) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// What the guest installs as its filter; it counts its calls and returns `g_guest_result`.
+int g_guest_filter_calls = 0;
+LONG g_guest_result = EXCEPTION_CONTINUE_SEARCH;
+
+LONG WINAPI guest_filter(EXCEPTION_POINTERS* /*exception*/) {
+    ++g_guest_filter_calls;
+    return g_guest_result;
+}
+
 // ---- A walk from inside a host callback that guest code called ----
 
 struct CallbackSeen {
@@ -260,11 +272,13 @@ TEST_CASE("the installed filter logs the report, then hands the exception on") {
     Loader loader(make_options());
     const Module guest = loader.load(std::string(kGuest));
 
-    const LPTOP_LEVEL_EXCEPTION_FILTER before = SetUnhandledExceptionFilter(&previous_filter);
+    SetUnhandledExceptionFilter(&previous_filter);
     g6::loader::install_crash_report();
     g6::loader::install_crash_report();
+    // Reads the process's filter and leaves it installed.
     Installed installed;
-    installed.filter = SetUnhandledExceptionFilter(before);
+    installed.filter = SetUnhandledExceptionFilter(nullptr);
+    SetUnhandledExceptionFilter(installed.filter);
     REQUIRE(installed.filter != nullptr);
     REQUIRE(installed.filter != &previous_filter);
 
@@ -281,4 +295,46 @@ TEST_CASE("the installed filter logs the report, then hands the exception on") {
     INFO(lines[0]);
     CHECK(lines[0].starts_with("unhandled access violation"));
     CHECK(lines[0].find(fmt::format("\n    #0  {}+", kGuest)) != std::string::npos);
+}
+
+// After the test above, which installed the report over previous_filter.
+TEST_CASE("a guest's filter is kept, and runs after the report") {
+    Loader loader(make_options());
+    const Module guest = loader.load(std::string(kGuest));
+    const auto set_filter = guest_export<SetFilterFn>(guest, "g6_stack_set_filter");
+    const auto store = guest_export<StoreFn>(guest, "g6_stack_store");
+
+    CHECK(set_filter(&guest_filter) == nullptr);
+    // The process's filter is still the report's.
+    Installed installed;
+    installed.filter = SetUnhandledExceptionFilter(nullptr);
+    SetUnhandledExceptionFilter(installed.filter);
+    REQUIRE(installed.filter != nullptr);
+    REQUIRE(installed.filter != &guest_filter);
+    REQUIRE(installed.filter != &previous_filter);
+    const int previous_calls = g_previous_calls;
+
+    // The guest's filter passes: the one from before the report gets the exception.
+    g_guest_result = EXCEPTION_CONTINUE_SEARCH;
+    {
+        const LogCapture log;
+        CHECK(store_in_guest(store, nullptr, &call_installed, &installed));
+        CHECK_EQ(log.lines().size(), size_t{1});
+    }
+    CHECK_EQ(g_guest_filter_calls, 1);
+    CHECK_EQ(g_previous_calls, previous_calls + 1);
+    CHECK_EQ(installed.result, LONG{EXCEPTION_EXECUTE_HANDLER});
+
+    // The guest's filter decides: nothing after it runs.
+    g_guest_result = EXCEPTION_CONTINUE_EXECUTION;
+    {
+        const LogCapture log;
+        CHECK(store_in_guest(store, nullptr, &call_installed, &installed));
+        CHECK_EQ(log.lines().size(), size_t{1});
+    }
+    CHECK_EQ(g_guest_filter_calls, 2);
+    CHECK_EQ(g_previous_calls, previous_calls + 1);
+    CHECK_EQ(installed.result, LONG{EXCEPTION_CONTINUE_EXECUTION});
+
+    CHECK(set_filter(nullptr) == &guest_filter);
 }

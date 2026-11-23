@@ -6,6 +6,7 @@
 #include "g6/loader/crash_report.h"
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -243,7 +244,10 @@ std::string report(const EXCEPTION_POINTERS& exception, const StackRange& stack)
 
 // ---- The top-level filter ----
 
+// The host's filter from before ours, and the guest's, which the guest's
+// SetUnhandledExceptionFilter keeps here instead of installing.
 LPTOP_LEVEL_EXCEPTION_FILTER g_previous = nullptr;
+std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_guest_filter{nullptr};
 std::mutex g_report_mutex;
 thread_local bool t_reporting = false;
 
@@ -289,9 +293,25 @@ LONG WINAPI on_unhandled_exception(EXCEPTION_POINTERS* exception) {
         }
         t_reporting = false;
     }
+    if (const LPTOP_LEVEL_EXCEPTION_FILTER guest = g_guest_filter.load()) {
+        const LONG result = guest(exception);
+        if (result != EXCEPTION_CONTINUE_SEARCH) {
+            return result;
+        }
+    }
     return g_previous != nullptr ? g_previous(exception) : EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Named like the Win32 function it stands in for; only register_crash_report hands it out.
+namespace hle {
+
+LPTOP_LEVEL_EXCEPTION_FILTER WINAPI
+SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER filter) {
+    install_crash_report();
+    return g_guest_filter.exchange(filter);
+}
+
+} // namespace hle
 } // namespace
 
 CodeAddress locate_code(uint64_t address) {
@@ -340,7 +360,15 @@ std::string crash_report(const EXCEPTION_POINTERS& exception) {
 
 void install_crash_report() {
     static std::once_flag once;
-    std::call_once(once, [] { g_previous = SetUnhandledExceptionFilter(&on_unhandled_exception); });
+    std::call_once(once,
+                   [] { g_previous = ::SetUnhandledExceptionFilter(&on_unhandled_exception); });
+}
+
+void register_crash_report(ImportRegistry& imports) {
+    for (const char* dll : {"api-ms-win-core-errorhandling-*", "kernel32.dll", "kernelbase.dll"}) {
+        imports.hle(dll, Symbol::by_name("SetUnhandledExceptionFilter"),
+                    reinterpret_cast<const void*>(&hle::SetUnhandledExceptionFilter));
+    }
 }
 
 } // namespace g6::loader

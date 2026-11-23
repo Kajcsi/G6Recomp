@@ -176,6 +176,12 @@ TEST_CASE("the path functions runtime/io maps are HLE, never the host's") {
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_wpgmptr", L"ucrtbase.dll"},
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", L"ucrtbase.dll"},
         {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_wide_winmain_command_line", L"ucrtbase.dll"},
+        // The guest's top-level exception filter runs after the crash report
+        // (g6/loader/crash_report.h).
+        {"api-ms-win-core-errorhandling-l1-1-0.dll", "SetUnhandledExceptionFilter",
+         L"kernelbase.dll"},
+        {"kernel32.dll", "SetUnhandledExceptionFilter", L"kernelbase.dll"},
+        {"kernelbase.dll", "SetUnhandledExceptionFilter", L"kernelbase.dll"},
     };
     for (const Expected& item : expected) {
         INFO(std::string(item.dll) + "!" + item.name);

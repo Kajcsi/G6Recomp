@@ -14,6 +14,8 @@
 #include <vector>
 #include <windows.h>
 
+#include "g6/loader/import_registry.h"
+
 namespace g6::loader {
 
 // Where an address lies.
@@ -52,5 +54,13 @@ std::string crash_report(const EXCEPTION_POINTERS& exception);
 // thread of its own, since little of the faulting thread's stack is left. Installing it again
 // does nothing.
 void install_crash_report();
+
+// Binds the guest's SetUnhandledExceptionFilter, from api-ms-win-core-errorhandling-*, kernel32,
+// and kernelbase, to one that keeps the guest's filter instead of installing it, and returns the
+// filter the guest kept before. The first call installs the crash report, whose filter calls the
+// guest's after its report; when the guest's returns EXCEPTION_CONTINUE_SEARCH, the filter from
+// before the report's gets the exception. The C runtime startup of an executable installs a
+// filter of its own before main, which would otherwise replace the report's.
+void register_crash_report(ImportRegistry& imports);
 
 } // namespace g6::loader

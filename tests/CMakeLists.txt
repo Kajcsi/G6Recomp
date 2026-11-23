@@ -183,14 +183,16 @@ add_dependencies(test_loader loader_guest loader_guest_exe g6replaced replaced_i
     init_guest)
 
 # Crash reports (docs/execution-model.md, "Crash reports"): an original guest DLL with frames for
-# the stack walk and a leaf without unwind data that faults. Optimized, with no C runtime and no
-# entry point, in a folder of its own that serves as the loader's search path.
+# the stack walk, a leaf without unwind data that faults, and a call to SetUnhandledExceptionFilter.
+# Optimized, with no C runtime and no entry point, and onecore_apiset for its one import, in a
+# folder of its own that serves as the loader's search path.
 set(G6_STACK_GUEST_DIR ${CMAKE_BINARY_DIR}/stack_guest)
 add_library(stack_guest SHARED fixtures/stack_guest/stack_guest.c)
 g6_target_defaults(stack_guest)
 set_target_properties(stack_guest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${G6_STACK_GUEST_DIR})
 target_compile_options(stack_guest PRIVATE /O2 /GS-)
 target_link_options(stack_guest PRIVATE /NOENTRY /NODEFAULTLIB /INCREMENTAL:NO)
+target_link_libraries(stack_guest PRIVATE onecore_apiset)
 
 g6_add_test(test_crash_report LABEL nogame
     SOURCES loader/test_crash_report.cpp

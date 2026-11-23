@@ -21,6 +21,7 @@
 #include "g6/imports/files.h"
 #include "g6/imports/registry.h"
 #include "g6/imports/xmem.h"
+#include "g6/loader/crash_report.h"
 
 namespace g6::imports {
 namespace {
@@ -91,6 +92,9 @@ void add_crt(ImportRegistry& imports) {
     // The guest's own command line, for the CRT's argument functions and GetCommandLine
     // (docs/execution-model.md, phase 5, "Command line").
     register_command_line(imports);
+    // The guest's top-level exception filter runs after the crash report
+    // (docs/execution-model.md, "Crash reports").
+    loader::register_crash_report(imports);
 
     // The rest of the path functions: those that return -1 on failure ...
     stub_each(imports, kCrt,
