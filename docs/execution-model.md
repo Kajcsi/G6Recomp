@@ -282,6 +282,45 @@ that something else jumps into. Microsoft Detours (MIT) is the alternative, but 
 mid-function register contexts. Relocated instructions exist only in memory at run time, never
 in the repo.
 
+### Crash reports
+
+When a guest crashes, the report has to name guest code the way the analysis tools do, and the
+stack has to get through guest frames. Leonida reported that `RtlCaptureStackBackTrace` stops
+at the first frame in a manually mapped image, and that walking with `RtlLookupFunctionEntry`
+and `RtlVirtualUnwind` over the registered tables gets through.
+
+**Checked here** (Windows 11 26200, an original guest DLL that calls back into the host two
+frames deep): `RtlCaptureStackBackTrace` returns the host callback and the first guest return
+address, then stops, so the guest's caller and everything below it are missing.
+`RtlLookupFunctionEntry` finds the tables the loader registers with `RtlAddFunctionTable`, and a
+walk with it gets through the guest frames to the host code that called them and on to the
+thread's start.
+
+**Ours** (`g6/loader/crash_report.h`): `walk_stack` unwinds from a context with those two
+functions. A function without unwind data is a leaf, whose return address is at the stack
+pointer; that also covers a call through a bad pointer. The walk stops at a null return
+address, at a stack pointer that doesn't grow or leaves the thread's stack, and at unwind data
+that faults when followed. Each frame is named by module and offset; a guest frame also gets
+its address at the module's preferred base, which is what `x64recomp` and REA show. A guest
+module is found through the active `Loader`'s module list, which includes modules whose
+`DllMain` is still running.
+
+`install_crash_report` installs a top-level exception filter. For an exception no frame
+handled, it logs one report at error level (category `crash`): the exception's code and name,
+where it happened, what an access violation touched, the type of a C++ exception (read from the
+throw information the compiler emits), the registers, and the stack. It then hands the
+exception to the filter that was there before, so the process ends, or a debugger gets it, as
+it would have. A stack overflow is reported from a thread of its own, since little of the
+faulting thread's stack is left; the faulting thread waits for it, at most ten seconds.
+
+Still open: `SetUnhandledExceptionFilter` is forwarded, so a guest that installs its own filter
+replaces ours. If the main executable does, the function needs an HLE entry that keeps the
+guest's filter and has ours call it after the report.
+
+Tested by `test_crash_report` on an original optimized DLL: a fault in a leaf without unwind
+data two guest frames down, a walk from a host callback the guest called, a C++ exception's
+type, and the installed filter handing the exception on.
+
 ## What stays recompiled
 
 ### x64recomp as the analysis tool

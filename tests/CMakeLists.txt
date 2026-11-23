@@ -182,6 +182,23 @@ target_compile_definitions(test_loader PRIVATE G6_GUEST_DIR="${G6_GUEST_DIR}")
 add_dependencies(test_loader loader_guest loader_guest_exe g6replaced replaced_importer init_sink
     init_guest)
 
+# Crash reports (docs/execution-model.md, "Crash reports"): an original guest DLL with frames for
+# the stack walk and a leaf without unwind data that faults. Optimized, with no C runtime and no
+# entry point, in a folder of its own that serves as the loader's search path.
+set(G6_STACK_GUEST_DIR ${CMAKE_BINARY_DIR}/stack_guest)
+add_library(stack_guest SHARED fixtures/stack_guest/stack_guest.c)
+g6_target_defaults(stack_guest)
+set_target_properties(stack_guest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${G6_STACK_GUEST_DIR})
+target_compile_options(stack_guest PRIVATE /O2 /GS-)
+target_link_options(stack_guest PRIVATE /NOENTRY /NODEFAULTLIB /INCREMENTAL:NO)
+
+g6_add_test(test_crash_report LABEL nogame
+    SOURCES loader/test_crash_report.cpp
+    LIBS g6loader)
+target_include_directories(test_crash_report PRIVATE fixtures/stack_guest)
+target_compile_definitions(test_crash_report PRIVATE G6_STACK_GUEST_DIR="${G6_STACK_GUEST_DIR}")
+add_dependencies(test_crash_report stack_guest)
+
 # The hook engine's original test guest (docs/hooks.md): hand-written functions in top-level
 # assembly, so each patch window holds exactly the instructions a test needs, and C and C++
 # callers that catch exceptions thrown below them. Static C runtime, like loader_guest. /EHc-

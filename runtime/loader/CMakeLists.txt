@@ -39,6 +39,7 @@ target_compile_definitions(g6exetls PRIVATE G6_TLS_DONOR_CAPACITY=${G6_TLS_DONOR
 target_link_options(g6exetls INTERFACE /INCLUDE:_tls_used /INCLUDE:g6_exe_tls_callbacks_end)
 
 add_library(g6loader STATIC
+    src/crash_report.cpp
     src/hle_loader.cpp
     src/import_registry.cpp
     src/loader.cpp
