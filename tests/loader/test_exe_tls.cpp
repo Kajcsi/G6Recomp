@@ -210,6 +210,34 @@ TEST_CASE("a /GA guest executable gets TLS index 0 and its own data on every thr
     CHECK(host_there);
 }
 
+TEST_CASE("the executable's TLS callbacks get every later thread's attach and detach") {
+    // As under a Windows launch: the callbacks run once for process attach at the load, then on
+    // each thread that starts afterwards, the entry point's included, with that thread's block
+    // already filled (docs/execution-model.md, "TLS and the TEB").
+    Loader loader(make_options());
+    const Module exe = loader.load("ga_guest.exe");
+    const Guest guest(exe);
+    const auto attached = guest_function<int (*)()>(exe, "g6_ga_attached");
+    const auto process_attaches = guest_function<LONG (*)()>(exe, "g6_ga_process_attaches");
+    const auto marked_detaches = guest_function<LONG (*)()>(exe, "g6_ga_marked_detaches");
+    CHECK_EQ(process_attaches(), LONG{1});
+    // The loading thread existed before the executable, so it got no thread attach.
+    CHECK_EQ(attached(), 0);
+
+    int attached_there = -1;
+    std::thread([&] {
+        attached_there = attached();
+        guest.set(G6_GA_DETACH_MARK);
+    }).join();
+    CHECK_EQ(attached_there, 1);
+    CHECK_EQ(marked_detaches(), LONG{1});
+
+    // The entry point checks its own attach and marks its thread.
+    CHECK_EQ(loader.run_entry_point(exe), uint32_t{G6_GA_ENTRY_CHECKS});
+    CHECK_EQ(marked_detaches(), LONG{2});
+    CHECK_EQ(process_attaches(), LONG{1});
+}
+
 TEST_CASE("index 0 is lent again after the guest executable is unloaded") {
     for (int round = 0; round < 2; ++round) {
         INFO(fmt::format("round {}", round));

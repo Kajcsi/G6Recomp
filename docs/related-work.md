@@ -29,7 +29,7 @@ functions to C++, one at a time, and checks each against the original. We run gu
 natively. So its translators don't carry over, but its measurements of the package and of
 desktop D3D12 do.
 
-**Last reviewed: commit `ec5d004` (2026-11-24).** No code has been copied. If code is ever
+**Last reviewed: commit `be8624e` (2026-11-24).** No code has been copied. If code is ever
 copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES.md).
 
 ### Taken
@@ -122,6 +122,11 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 | Windows 10 calls two TLS callbacks in table order and then the entry point on every notification, and gives each thread a fresh copy of a template that crosses a page (`02cd2ac`, `54b6781`) | Reported. Our loader does the same; no fixture has two callbacks yet | [execution-model.md](execution-model.md) |
 | `XMemAllocDefault` and `XMemFreeDefault` take `XMemAlloc`'s and `XMemFree`'s arguments and share their allocator; `XMemIsToolsMemAvailable` is `BOOL (void)`, FALSE on retail (`713c3ba`, `8e85283`) | Taken: ours does the same | [hle-status.md](hle-status.md) |
 | Returning LDS updates write the word's value from before the update, with the inputs read first since the destination may overlap them; `ds_rsub_u32`, and signed or unsigned min and max; `v_mul_lo_u32` is the low 32 bits of the full product; f16 floor, ceil, trunc and round-to-even go exactly through f32 and keep the sign of zero (`daf87ee`, `80c4d6e`, `a329153`, `cc09358`, `8872308`) | Reported, from AMD's ISA reference and tests on desktop GPUs, not RDNA 2 | Later: `shaderrecomp` (M3) |
+| Once it has a device, the executable keeps its first 24 GiB reservation as a CPU range A and the second as a GPU range B of the same size, and translates by offset: `gpu = cpu - A + B`, the reverse inside `[B, B + size)`, other addresses unchanged. Desktop D3D12's `OpenExistingHeapFromAddress` opens only a fully committed range, so A would be committed and wrapped once, and D3D12 objects over it are released before it is freed (`b68ef35`, `af0590a`) | Reported (a static read of the executable, and a desktop test). Our run 1 shows the two reserves; how `memory_tracker` gives the GPU its side is M3 work | [boot.md](boot.md), "Our runs" |
+| A started executable's TLS callbacks get `DLL_THREAD_ATTACH` and `DLL_THREAD_DETACH` for every thread once all its process-attach callbacks have returned, and its entry point never gets them (measured on Windows 10, `41b1de6`, `c631998`) | Checked: our loader already did this, and `test_exe_tls` now covers it with an original fixture | [execution-model.md](execution-model.md) |
+| A synthetic caller and provider for `XMemMapPhysicalPages` and `XMemMapPhysicalPagesScatter`: 64 KiB address alignment, contiguous and scatter maps, and a null page array that unmaps. Map returning the base and scatter returning TRUE are its proposed contracts, not measurements of the game (`d3a0aae`, `24e58eb`, `379b0d6`) | Reported. Agrees with Leonida's measurements, which our physical pages follow | [boot.md](boot.md), "Physical pages" |
+| LDS d16 reads replace one half of a VGPR; `ds_inc_u32` and `ds_dec_u32` wrap at a limit, and so does `ds_wrap_rtn_b32`; `ds_cmpst_b32` replaces a word equal to its first operand, `ds_mskor_b32` clears the first operand's bits and ORs in the second, and `ds_wrxchg_rtn_b32` replaces the word. Returning forms write the old word (`dc7118f`, `03a101a`, `67b21b4`) | Reported, from AMD's ISA reference | Later: `shaderrecomp` (M3) |
+| DXC's GVN pass grows about fourfold per doubling on shaders with many conditional UAV stores; `-opt-disable gvn` compiles a 16,384-store case in seconds instead of minutes (`47be65f`) | Reported. A note for `shaderrecomp`'s compile budget | Later: `shaderrecomp` (M3) |
 
 ### Not taken
 
@@ -169,10 +174,14 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 * **Its changes at `ec5d004` with nothing for us:** the physical-page registry (bookkeeping
   with no memory behind it), the package import-closure tool, stack outputs through imports, and
   the static translator's AVX, x87 (including BCD), and fuzzing work.
+* **Its changes at `be8624e` with nothing for us:** the static translator's AVX broadcast,
+  permute, shuffle, blend, dot, round, and `vzeroall` lowerings, its CPU fuzz test's fixed-frame
+  generators, desktop tools-memory reporting (ours already answers FALSE), and Fedora setup
+  notes.
 
 ### Next review
 
-1. Run `git log ec5d004..origin/main` in a scratch clone outside the repo.
+1. Run `git log be8624e..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/experiments.md` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.
@@ -192,7 +201,7 @@ code can be ported with its notices kept. Little of it fits as it is, though: it
 Python and its translator emits SPIR-V. We take its measurements as facts, check them on our
 copy, and port code only where it fits our design.
 
-**Last reviewed: commit `976b3ec9` (2026-11-23).** No code has been copied yet. Upstream's
+**Last reviewed: commit `dde82f27` (2026-11-23).** No code has been copied yet. Upstream's
 `57c17539` reverts its console-ABI command-list proxy, import routing, and two console-ABI
 documents; the revert is for broken tests, so the facts from them below still stand.
 
@@ -381,10 +390,13 @@ documents; the revert is for broken tests, so the facts from them below still st
   and frame-event methods, whose source is another project of unknown provenance (our own run
   will show them at M3); its Vulkan validation and barycentric fallback; the XMA2 crate (FFmpeg's
   C decoder is the more direct source at M4); and its asset, BVH, and tooling changes.
+* **Its changes at `dde82f27` with nothing for us:** help-text pointers in its docs, option
+  checks in its tools, a readback check in its cross-GPU sweep, and fixes to its movie notes and
+  audio tag tooling.
 
 ### Next review
 
-1. Run `git log 976b3ec9..origin/main` in a scratch clone outside the repo.
+1. Run `git log dde82f27..origin/main` in a scratch clone outside the repo.
 2. Read the diff of `docs/` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.

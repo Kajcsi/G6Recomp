@@ -106,7 +106,7 @@ logs stay in `private/runs/`.
 
 | Run | First stop | What came next |
 |---|---|---|
-| 1 | `D3D12ConfigureVirtualMemoryX` and `XMemVirtualAlloc` are unbound, and the game crashes on the null result | `D3D12ConfigureVirtualMemoryX` logs its block and succeeds. The block is zero apart from the DWORD at +4, which is 4 here. The two reserves that follow are 24 GiB each, of type `0x20402000` (without commit), with attribute and protection words 0x21 and 4, then 3 and 0x801, as Xbox2Windows reported (checked at debug level on run 6). Then come 2 MiB-page commits. `XMemVirtualAlloc` goes through `memory_tracker` |
+| 1 | `D3D12ConfigureVirtualMemoryX` and `XMemVirtualAlloc` are unbound, and the game crashes on the null result | `D3D12ConfigureVirtualMemoryX` logs its block and succeeds. The block is zero apart from the DWORD at +4, which is 4 here. The two reserves that follow are 24 GiB each, of type `0x20402000` (without commit), with attribute and protection words 0x21 and 4, then 3 and 0x801, as Xbox2Windows reported (checked at debug level on run 6). By Xbox2Windows's static read, the executable keeps the first as its CPU range and the second as the GPU's view of it once it has a device. Then come 2 MiB-page commits. `XMemVirtualAlloc` goes through `memory_tracker` |
 | 2 | The app-state notification functions (`api-ms-win-core-psm-appnotify`) are unbound | Forwarded to the host |
 | 3 | `GameInputCreate` (GameInput ordinal 1) is unbound, and the game asserts | A stand-in `IGameInput` with no devices: slot 3, the timestamp, works, and every other slot is logged and fails |
 | 4 | `DStorageGetFactory` is unbound, and the game asserts (Leonida's stop 5). It called `IGameInput` slot 9 first and went on after the failure | A stand-in factory |

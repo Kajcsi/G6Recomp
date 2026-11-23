@@ -162,7 +162,9 @@ Static TLS for modules we map ourselves uses only documented behaviour:
   loader library), so it sits in the host executable's TLS callback array next to the C
   runtime's. On attach the loader copies each guest module's TLS template into its block, then
   runs the guest's TLS callbacks and `DllMain` in initialization order; on detach it runs them in
-  reverse. The template is copied from the mapped image, so pointers in it are relocated. The
+  reverse. A guest executable's TLS callbacks take part too, from the end of its process attach,
+  as under a Windows launch; it has no `DllMain` to call. The template is copied from the mapped
+  image, so pointers in it are relocated. The
   loader refuses to start if the notifier never ran, which means the host's TLS directory doesn't
   list it.
 * The notifier also keeps a list of the threads it has seen. When a module loads, the loader
