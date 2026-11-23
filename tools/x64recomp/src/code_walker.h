@@ -42,6 +42,7 @@ struct WalkResult {
     // Where jumps that stay inside the ranges land: direct jumps, conditional or not, and the
     // entries of resolved switch tables. Sorted, without duplicates.
     std::vector<uint32_t> branch_targets;
+    std::vector<uint32_t> decode_error_sites; // where each decode error happened, in walk order
 
     bool ok() const { return decode_errors == 0 && ran_off_end == 0 && bad_targets == 0; }
 };

@@ -302,6 +302,10 @@ int cmd_scan(const pe::Image& image, const std::vector<std::string_view>& flags)
     fmt::print("  unresolved jumps    {}\n", c.unresolved_jumps);
     fmt::print("  errors              {} decode, {} directory\n", c.decode_errors,
                c.directory_errors);
+    if (!c.decode_error_sites.empty()) {
+        fmt::print("  decode errors at    {}\n",
+                   recomp::describe_sites({.walked = c.decode_error_sites, .swept = {}}, 32));
+    }
 
     fmt::print("\nfeatures\n");
     std::string baseline;

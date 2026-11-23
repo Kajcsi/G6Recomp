@@ -427,6 +427,7 @@ public:
                              &report_.cpuid, &report_.xgetbv}) {
             finish_sites(*sites);
         }
+        sort_unique(report_.coverage.decode_error_sites);
         report_.system = to_uses(system_);
         report_.traps = to_uses(traps_);
         report_.timing = to_uses(timing_);
@@ -503,6 +504,9 @@ private:
             });
         report_.coverage.unresolved_jumps += result.indirect_jumps;
         report_.coverage.decode_errors += result.decode_errors;
+        report_.coverage.decode_error_sites.insert(report_.coverage.decode_error_sites.end(),
+                                                   result.decode_error_sites.begin(),
+                                                   result.decode_error_sites.end());
     }
 
     void mark(uint32_t rva, uint32_t length) {
@@ -1042,9 +1046,10 @@ std::vector<std::string> review_notes(const ScanReport& report) {
                                     report.coverage.swept_instructions));
     }
     if (report.coverage.decode_errors > 0 || report.coverage.directory_errors > 0) {
-        notes.push_back(fmt::format("{} decode errors and {} unreadable directories",
-                                    report.coverage.decode_errors,
-                                    report.coverage.directory_errors));
+        notes.push_back(fmt::format(
+            "{} decode errors ({}) and {} unreadable directories", report.coverage.decode_errors,
+            describe_sites({.walked = report.coverage.decode_error_sites, .swept = {}}),
+            report.coverage.directory_errors));
     }
     return notes;
 }

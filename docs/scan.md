@@ -42,7 +42,8 @@ The output has these sections:
    cleanup funclets, the functions with catches and how many of those are unverifiable, tables
    that don't read, and the catch continuations by source (the guard table, FH4's records,
    funclet returns) with any strays.
-2. **coverage**: functions, instructions, `.pdata` bytes, and unreached bytes.
+2. **coverage**: functions, instructions, `.pdata` bytes, unreached bytes, unresolved jumps,
+   and errors, with the address of each decode error.
 3. **features**: each instruction set extension outside the baseline, with its class, count,
    sites, and whether this host has it. The baseline extensions follow on one line.
 4. **segment accesses**: each `fs:` and `gs:` access, its TEB field name, and the TLS slot
@@ -146,7 +147,7 @@ has a few data bytes that decode as `insd`, which only the sweep finds.
 | not-Zen 2 features | Confirm a feature check guards them |
 | code reads or writes | Stop before hooking (pre-flight check 7) |
 | unreached `.pdata` bytes | Usually nothing; look if the sweep found anything there |
-| decode or directory errors | The file is malformed, or a reader needs fixing |
+| decode or directory errors | The file is malformed, a reader needs fixing, or the walk followed a bad table entry or a call that doesn't return into data; look at the listed addresses |
 | C++ handler whose tables don't read | Whether the reader needs fixing; until then the hook engine treats the function's handler as unknown |
 | functions with a catch whose continuation no source names | Expect a hand check (`handler_checked`) for mid-function hooks in them |
 | catch continuations missing from the EH continuation table | One of the sources is being misread; fix it before trusting the map |

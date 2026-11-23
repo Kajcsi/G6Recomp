@@ -128,6 +128,7 @@ struct CoverageFacts {
     uint64_t unreached_bytes = 0; // of those, bytes the walk didn't decode, padding excluded
     size_t unresolved_jumps = 0;
     size_t decode_errors = 0;
+    std::vector<uint32_t> decode_error_sites; // sorted, without duplicates
     size_t directory_errors = 0;
 };
 

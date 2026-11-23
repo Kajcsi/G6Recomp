@@ -114,6 +114,7 @@ WalkResult CodeWalker::walk(std::span<const uint32_t> entries, std::span<const R
             if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&decoder_, &context, mapped.data() + pc,
                                                             range->end - pc, &insn))) {
                 ++result.decode_errors;
+                result.decode_error_sites.push_back(pc);
                 break;
             }
             ++result.instructions;
