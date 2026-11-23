@@ -403,14 +403,15 @@ public:
         }
     }
 
-    // Relocated pointers into code that don't point at a function's start.
+    // Relocated pointers into code that don't point at a function's start. The entries of a
+    // resolved table of absolute addresses are such pointers too, and are left out.
     void scan_pointers(const std::vector<pe::Relocation>& relocations) {
         for (const pe::Relocation& relocation : relocations) {
             if (relocation.type != pe::kRelocDir64 || !image_.contains(relocation.rva, 8)) {
                 continue;
             }
             const auto target = image_.try_va_to_rva(image_.read<uint64_t>(relocation.rva));
-            if (target && is_inner_code(*target)) {
+            if (target && is_inner_code(*target) && !in_table(relocation.rva)) {
                 report_.code_addresses.push_back({relocation.rva, *target, false, true});
             }
         }

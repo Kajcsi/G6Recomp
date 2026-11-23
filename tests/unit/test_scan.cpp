@@ -71,6 +71,35 @@ TEST_CASE("scan counts relocations that aren't 64-bit") {
     CHECK(has_note(notes, "aren't 64-bit"));
 }
 
+TEST_CASE("scan leaves a resolved table's relocated entries out of the taken addresses") {
+    PeBuilder b = image_with({0x83, 0xF8, 0x01,                         // cmp eax, 1
+                              0x0F, 0x87, 0x37, 0x00, 0x00, 0x00,       // ja 0x1040 (default)
+                              0x48, 0x8D, 0x15, 0xF0, 0x0F, 0x00, 0x00, // lea rdx, [0x2000]
+                              0xFF, 0x24, 0xC2},                        // jmp [rdx+rax*8]
+                             true);
+    b.put_bytes(0x1020, {0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}); // mov eax, 1; ret
+    b.put_bytes(0x1030, {0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3}); // mov eax, 2; ret
+    b.put_bytes(0x1040, {0x31, 0xC0, 0xC3});                   // xor eax, eax; ret
+    const uint32_t rdata = b.add_section(".rdata", PeBuilder::kRdata, 0x20);
+    REQUIRE(rdata == 0x2000);
+    b.put<uint64_t>(rdata, PeBuilder::kImageBase + 0x1020); // the table
+    b.put<uint64_t>(rdata + 8, PeBuilder::kImageBase + 0x1030);
+    b.put<uint64_t>(rdata + 16, PeBuilder::kImageBase + 0x1030); // a pointer of its own
+    const uint32_t reloc = b.add_section(".reloc", PeBuilder::kRdata, 0x10);
+    b.put<uint32_t>(reloc, rdata);                 // page
+    b.put<uint32_t>(reloc + 4, 16);                // block size
+    b.put<uint16_t>(reloc + 8, (10 << 12) | 0x00); // DIR64 at each 8-byte slot
+    b.put<uint16_t>(reloc + 10, (10 << 12) | 0x08);
+    b.put<uint16_t>(reloc + 12, (10 << 12) | 0x10);
+    b.set_directory(pe::Directory::BaseReloc, reloc, 16);
+
+    const recomp::ScanReport report = recomp::scan_module(b.image());
+    REQUIRE(report.code_addresses.size() == 1);
+    CHECK_EQ(report.code_addresses[0].site, rdata + 16);
+    CHECK_EQ(report.code_addresses[0].target, 0x1030u);
+    CHECK(report.code_addresses[0].pointer);
+}
+
 TEST_CASE("scan doesn't follow the TLS array past a branch") {
     // mov rax, gs:[0x58]; ret
     const PeBuilder b =

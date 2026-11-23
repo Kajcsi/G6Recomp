@@ -70,7 +70,8 @@ Code sometimes takes the address of other code that isn't a function start. This
 as a RIP-relative `lea`, or as a 64-bit relocated pointer in the image. These addresses are
 reported as **addresses inside functions**. The scan then walks from each one as if it were an
 entry, stopping at code already covered, for up to eight rounds, since a newly walked piece can
-take further addresses.
+take further addresses. The relocated entries of a resolved switch table of absolute addresses
+point at case labels by design, so they are left out.
 
 On the side DLLs these are the continuations of C++ catch blocks. A catch funclet returns the
 address where execution resumes after the catch, and nothing else jumps there. Without this
