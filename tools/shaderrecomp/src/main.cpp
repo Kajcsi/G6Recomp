@@ -268,6 +268,12 @@ void print_inputs(const std::map<uint8_t, shader::StageInputs>& stages,
                        "register they don't load; {} indexing registers through m0 not checked\n",
                        s.setup_checked, s.setup_vgprs_checked, s.setup_outside, s.setup_unchecked);
         }
+        const auto matches = [](const shader::CountMatch& m) {
+            return fmt::format("{} as modelled ({} beyond the code's), {} above, {} below", m.equal,
+                               m.beyond_code, m.above, m.below);
+        };
+        fmt::print("  register count VGPRs {}; SGPRs {}, {} below those loaded\n",
+                   matches(s.vgpr_counts), matches(s.sgpr_counts), s.sgpr_count_below_loaded);
         if (s.rsrc2 > 0) {
             fmt::print("  RSRC2 word     in {} programs, user SGPRs differing from the setup word "
                        "in {}\n",

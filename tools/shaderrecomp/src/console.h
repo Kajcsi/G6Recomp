@@ -104,6 +104,18 @@ struct FssmSetup {
 // Throws FormatError when the image isn't FSSM or is too short to hold the word.
 FssmSetup fssm_setup(std::span<const uint8_t> fssm);
 
+// The first stage's register counts, from the 32-bit word at byte 0x110, 0x10 into its stage
+// record: VGPRs in bits 0 to 9 and SGPRs in bits 20 to 31. They are plain counts, not the granules
+// SPI_SHADER_PGM_RSRC1 takes, and in 1.0.2.1 no other bit of the word is set. How they follow
+// from the code and the setup words is in docs/shaders.md (StageInputs::vgpr_counts in
+// census.h). Nothing when the image has no stage record.
+struct FssmRegisterCounts {
+    uint32_t vgprs = 0;
+    uint32_t sgprs = 0;
+    bool operator==(const FssmRegisterCounts&) const = default;
+};
+std::optional<FssmRegisterCounts> fssm_register_counts(std::span<const uint8_t> fssm);
+
 // The first stage's program resource word 2, laid out as SPI_SHADER_PGM_RSRC2_* or, for CS,
 // COMPUTE_PGM_RSRC2 in AMD's public register reference: the user SGPR count in bits 1 to 5, then
 // the stage's own enables. It sits at 0x138 for CS and GS, 0x23C for PS, and 0x2A0 for VS and ES.

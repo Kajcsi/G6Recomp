@@ -850,6 +850,26 @@ std::optional<unsigned> wave_size(const Program& program) {
     return wide ? 64U : 32U;
 }
 
+RegisterExtent register_extent(const Program& program, unsigned wave_size) {
+    RegisterExtent extent;
+    const auto take = [&](std::span<const RegisterRange> ranges) {
+        for (const RegisterRange& r : ranges) {
+            const unsigned end = unsigned{r.first} + r.count;
+            if (r.file == RegisterFile::kVector) {
+                extent.vgprs = std::max(extent.vgprs, end);
+            } else if (r.first < kScalarVcc) {
+                extent.sgprs = std::max(extent.sgprs, std::min<unsigned>(end, kScalarVcc));
+            }
+        }
+    };
+    for (const Instruction& insn : program.instructions) {
+        const Footprint f = footprint(insn, wave_size);
+        take(f.reads());
+        take(f.writes());
+    }
+    return extent;
+}
+
 LiveIns live_ins(const Program& program, unsigned wave_size) {
     LiveIns result;
     const std::vector<Instruction>& insns = program.instructions;

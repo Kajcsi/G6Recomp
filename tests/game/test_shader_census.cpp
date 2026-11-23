@@ -266,6 +266,28 @@ TEST_CASE("every native program decodes as RDNA 2 to the end of its code") {
         CHECK_EQ(stage.rsrc2_user_differs, size_t{0});
         CHECK_EQ(stage.rsrc2, hardware == sh::kHardwareMesh ? size_t{0} : stage.programs);
     }
+    // The register counts word (fssm_register_counts) is what the model makes of the code and
+    // the setup words in every program but 114, which count one to three more VGPRs than the
+    // code uses: 113 mesh programs and one pixel program. None counts fewer. Per stage: VGPR
+    // counts above the model, then the counts the setup words or the stage's minimum set beyond
+    // the code's registers, VGPRs and SGPRs. GS programs count only the SGPRs their code uses,
+    // and 179 of them fewer than the setup check has the words load.
+    const std::map<uint8_t, std::array<size_t, 3>> counts = {
+        {sh::kHardwareEs, {0, 0, 0}},    {sh::kHardwareGs, {0, 0, 0}},
+        {sh::kHardwareVs, {0, 17, 194}}, {sh::kHardwarePs, {1, 1, 1089}},
+        {sh::kHardwareCs, {0, 19, 5}},   {sh::kHardwareMesh, {113, 0, 0}}};
+    for (const auto& [hardware, stage] : inputs) {
+        INFO(sh::hardware_stage_name(hardware));
+        REQUIRE(counts.contains(hardware));
+        const std::array<size_t, 3>& expected = counts.at(hardware);
+        CHECK_EQ(stage.vgpr_counts.equal + stage.vgpr_counts.above, stage.programs);
+        CHECK_EQ(stage.vgpr_counts.above, expected[0]);
+        CHECK_EQ(stage.vgpr_counts.beyond_code, expected[1]);
+        CHECK_EQ(stage.sgpr_counts.equal, stage.programs);
+        CHECK_EQ(stage.sgpr_counts.beyond_code, expected[2]);
+        CHECK_EQ(stage.sgpr_count_below_loaded,
+                 hardware == sh::kHardwareGs ? size_t{179} : size_t{0});
+    }
     // The only jumps and calls left with unknown targets: vertex programs calling the fetch
     // subroutine, and every ES program, which copies s[6:7] to another pair and ends by jumping
     // there (158 of them call the fetch subroutine first).

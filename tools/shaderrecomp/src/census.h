@@ -134,6 +134,15 @@ struct ComputeSetup {
 };
 ComputeSetup compute_setup(uint32_t rsrc2);
 
+// Programs whose recorded count is the model's, above it, and below it; and of those equal, the
+// ones where the model reaches beyond the registers the code uses.
+struct CountMatch {
+    size_t equal = 0;
+    size_t above = 0;
+    size_t below = 0;
+    size_t beyond_code = 0;
+};
+
 // What the register model (regs.h) finds the programs of one hardware stage read before anything
 // writes them: the registers the hardware and the driver load when a wave starts.
 struct StageInputs {
@@ -162,6 +171,16 @@ struct StageInputs {
     size_t setup_vgprs_checked = 0;
     size_t setup_outside = 0;
     size_t setup_unchecked = 0;
+    // The register counts (fssm_register_counts) against a model: as far as the registers the code
+    // reads or writes (rdna2::register_extent) and those the setup check has the words load
+    // reach, with two more SGPRs (vcc's, as AMD's compilers count them), and at least four VGPRs
+    // in a VS (as many as its component count can load) and three in a CS (its thread IDs). A
+    // GS's SGPR model leaves out the SGPRs loaded, and no word found gives a GS's VGPRs. Every
+    // program with a stage record is counted, those indexing registers through m0 included.
+    CountMatch vgpr_counts;
+    CountMatch sgpr_counts;
+    // Programs counting fewer SGPRs than the setup check has the words load.
+    size_t sgpr_count_below_loaded = 0;
     size_t rsrc2 = 0;              // programs with an RSRC2 word (fssm_rsrc2)
     size_t rsrc2_user_differs = 0; // whose user SGPR count isn't the setup word's
     size_t fetch = 0;              // programs whose setup word sets the fetch bit

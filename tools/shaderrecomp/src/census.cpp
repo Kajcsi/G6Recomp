@@ -491,6 +491,31 @@ ProgramInputs count_inputs(std::map<uint8_t, StageInputs>& stages, std::span<con
         vgprs = static_cast<unsigned>(
             std::min<uint64_t>(uint64_t{first} + *components + 1, rdna2::kVectorRegisters));
     }
+    // The recorded register counts against the model (StageInputs::vgpr_counts).
+    if (const std::optional<FssmRegisterCounts> recorded = fssm_register_counts(fssm)) {
+        constexpr unsigned kVccSgprs = 2;
+        constexpr unsigned kVsVgprs = 4; // VGPR_COMP_CNT 3: vertex ID, two user VGPRs, instance ID
+        constexpr unsigned kCsVgprs = 3; // the thread IDs
+        const rdna2::RegisterExtent extent = rdna2::register_extent(program, wave);
+        unsigned model_vgprs = std::max(extent.vgprs, vgprs.value_or(0));
+        unsigned model_sgprs = extent.sgprs + kVccSgprs;
+        if (result.stage != kHardwareGs) {
+            model_sgprs = std::max(model_sgprs, sgprs.value_or(0));
+        }
+        if (result.stage == kHardwareVs) {
+            model_vgprs = std::max(model_vgprs, kVsVgprs);
+        } else if (result.stage == kHardwareCs) {
+            model_vgprs = std::max(model_vgprs, kCsVgprs);
+        }
+        const auto tally = [](CountMatch& match, uint32_t count, unsigned model, unsigned code) {
+            ++(count == model ? match.equal : count > model ? match.above : match.below);
+            match.beyond_code += count == model && model > code ? 1 : 0;
+        };
+        tally(counts.vgpr_counts, recorded->vgprs, model_vgprs, extent.vgprs);
+        tally(counts.sgpr_counts, recorded->sgprs, model_sgprs, extent.sgprs + kVccSgprs);
+        counts.sgpr_count_below_loaded += sgprs && recorded->sgprs < *sgprs ? 1 : 0;
+    }
+
     if (sgprs && live.dynamic) {
         ++counts.setup_unchecked;
     } else if (sgprs) {

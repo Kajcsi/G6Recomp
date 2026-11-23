@@ -492,6 +492,10 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       With one value in every program that is a fit, not proof, so the checks below leave GS
       VGPRs out. The driver's pipeline cache can't settle it either: none of its pipelines has
       a geometry stage.
+  * The first stage record's word at 0x110 holds the program's register counts
+    (`fssm_register_counts`): VGPRs in bits 0 to 9 and SGPRs in bits 20 to 31. They are plain
+    counts, not the granules `SPI_SHADER_PGM_RSRC1` takes, and no other bit is set in any
+    program. "Against the register counts" under "Registers at wave start" checks them.
 * **Registers at wave start.** **Checked here (decode):** `shaderrecomp`'s register model
   (`regs.h`, written from AMD's public RDNA 2 reference) lists the registers each instruction
   reads and writes. From that it finds the registers a program reads before any path writes
@@ -513,6 +517,25 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       programs, VGPRs up to the ones the component count loads from v5.
 
     VGPRs are checked in every stage but GS: 26,466 programs.
+  * **Against the register counts.** The counts at 0x110 follow from the register model in all
+    26,698 programs for SGPRs, and in all but 114 for VGPRs (`vgpr_counts` and `sgpr_counts`
+    in `StageInputs`). Programs that index registers through m0 are included.
+    * The VGPR count is the higher of the VGPRs the code reads or writes (`register_extent` in
+      `regs.h`) and the VGPRs the setup words load. It is at least 4 in a VS, as many as its
+      component count can load, and at least 3 in a compute program, its thread IDs. That
+      minimum sets the count in 17 VS and 19 compute programs that use fewer, and the loaded
+      VGPRs set it in 1 pixel program.
+    * 113 mesh programs and 1 pixel program count one to three VGPRs more than that, and no
+      program counts fewer. Nothing in their code was found to account for the extra ones. The
+      instructions that write their highest registers are ordinary one-register ones, and the
+      model already counts the extra VGPR a TFE load writes.
+    * The SGPR count is two more than the highest SGPR below vcc that the code reads or writes,
+      since AMD's compilers count vcc's pair. It is at least as many as the setup words load,
+      and the loaded SGPRs set it in 1,089 pixel, 194 VS, and 5 compute programs.
+    * GS programs are the exception: all 195 count only the SGPRs their code uses. In 179 of
+      them that is one SGPR fewer than the setup check has them load, the 8 system SGPRs plus
+      the user SGPRs. Either a GS isn't loaded the way that check assumes, or the compiler
+      leaves loaded SGPRs the GS half doesn't touch out of its count.
   * **Compute.** The SGPRs they read start at s4 (s5 in 2,598 programs); none reads s0 to s3.
     v0 is read in 2,605, v1 in 893, and v2 in 57.
   * **Pixel.** Their SGPRs run from s8 (s9 in 11,467) to s20; none reads s0 to s7.

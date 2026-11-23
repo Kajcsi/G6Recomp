@@ -142,6 +142,15 @@ FssmSetup fssm_setup(std::span<const uint8_t> fssm) {
             .fetch_sgpr = static_cast<uint8_t>(word >> 24)};
 }
 
+std::optional<FssmRegisterCounts> fssm_register_counts(std::span<const uint8_t> fssm) {
+    constexpr size_t kCountsAt = 0x110;
+    if (fssm_stages(fssm).empty() || fssm.size() < kCountsAt + 4) {
+        return std::nullopt;
+    }
+    const uint32_t word = read_u32(fssm, kCountsAt);
+    return FssmRegisterCounts{.vgprs = word & 0x3FF, .sgprs = word >> 20};
+}
+
 std::optional<uint32_t> fssm_rsrc2(std::span<const uint8_t> fssm) {
     const std::vector<FssmStage> stages = fssm_stages(fssm);
     if (stages.empty()) {

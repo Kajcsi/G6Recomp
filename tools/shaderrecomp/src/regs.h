@@ -66,6 +66,15 @@ std::optional<unsigned> image_address_count(const Instruction& insn);
 // 32-bit one, and nothing when it does neither or both.
 std::optional<unsigned> wave_size(const Program& program);
 
+// One past the highest SGPR below vcc, and one past the highest VGPR, that any decoded instruction
+// reads or writes, reached or not; zero when none does. Registers an instruction picks at run
+// time through m0 count only as far as its footprint lists them.
+struct RegisterExtent {
+    unsigned sgprs = 0;
+    unsigned vgprs = 0;
+};
+RegisterExtent register_extent(const Program& program, unsigned wave_size);
+
 // The registers some reached instruction reads although no path from the start of the program
 // writes them first: inputs. exec is set up by the hardware and never counted.
 struct LiveIns {

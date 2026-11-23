@@ -746,6 +746,61 @@ TEST_CASE("a program's inputs are checked against its stage's setup words") {
     CHECK_EQ(ps.fetch_differs, size_t{0});
 }
 
+TEST_CASE("a program's register counts are checked against the registers it uses and loads") {
+    namespace r = sh::rdna2;
+    // The pixel program above: s_mov_b32 m0, s10; v_interp_p1_f32 v2, v0, attr0.x;
+    // v_interp_p2_f32 v2, v1, attr0.x; s_endpgm. It uses s0 to s10 and v0 to v2.
+    const std::array<uint32_t, 4> words = {0xBEFC030A, 0xC8080000, 0xC8090001, 0xBF810000};
+    Bytes code;
+    for (const uint32_t word : words) {
+        put32(code, word);
+    }
+    const r::Program program = r::decode_program(code);
+    const r::RegisterExtent extent = r::register_extent(program, 64);
+    CHECK_EQ(extent.sgprs, 11U);
+    CHECK_EQ(extent.vgprs, 3U);
+
+    // VGPRs in bits 0 to 9 of the word at 0x110, SGPRs in bits 20 to 31.
+    const auto image = [](uint8_t hardware, uint8_t user_sgprs, uint32_t vgprs, uint32_t sgprs) {
+        const std::array<std::pair<uint8_t, uint8_t>, 1> stage = {{{1, hardware}}};
+        Bytes out = staged_fssm(stage, 0x2); // perspective center: I and J in v0 and v1
+        set32(out, 0xD4, uint32_t{user_sgprs} << 16);
+        set32(out, 0x110, vgprs | (sgprs << 20));
+        return out;
+    };
+    CHECK((sh::fssm_register_counts(image(sh::kHardwarePs, 10, 3, 13)) ==
+           sh::FssmRegisterCounts{.vgprs = 3, .sgprs = 13}));
+    CHECK(!sh::fssm_register_counts(fssm_image(0, 0x400)).has_value());
+
+    // The model: the code's registers or the loaded ones, whichever reach further, and two more
+    // SGPRs. With ten user SGPRs and the primitive mask, the code's s10 and vcc's two give 13;
+    // with 14 user SGPRs the 15 loaded do. A count above or below the model is tallied as such.
+    std::map<uint8_t, sh::StageInputs> stages;
+    sh::count_inputs(stages, image(sh::kHardwarePs, 10, 3, 13), program);
+    sh::count_inputs(stages, image(sh::kHardwarePs, 14, 4, 15), program);
+    sh::count_inputs(stages, image(sh::kHardwarePs, 14, 3, 13), program);
+    const sh::StageInputs& ps = stages[sh::kHardwarePs];
+    CHECK_EQ(ps.vgpr_counts.equal, size_t{2});
+    CHECK_EQ(ps.vgpr_counts.above, size_t{1});
+    CHECK_EQ(ps.vgpr_counts.beyond_code, size_t{0});
+    CHECK_EQ(ps.sgpr_counts.equal, size_t{2});
+    CHECK_EQ(ps.sgpr_counts.beyond_code, size_t{1});
+    CHECK_EQ(ps.sgpr_counts.below, size_t{1});
+    CHECK_EQ(ps.sgpr_count_below_loaded, size_t{1});
+
+    // A GS counts only the SGPRs its code uses, though its 20 user SGPRs load from s8.
+    sh::count_inputs(stages, image(sh::kHardwareGs, 20, 3, 13), program);
+    const sh::StageInputs& gs = stages[sh::kHardwareGs];
+    CHECK_EQ(gs.sgpr_counts.equal, size_t{1});
+    CHECK_EQ(gs.sgpr_count_below_loaded, size_t{1});
+    // A VS counts at least four VGPRs, though this one loads only v0 and uses three.
+    sh::count_inputs(stages, image(sh::kHardwareVs, 10, 4, 13), program);
+    const sh::StageInputs& vs = stages[sh::kHardwareVs];
+    CHECK_EQ(vs.vgpr_counts.equal, size_t{1});
+    CHECK_EQ(vs.vgpr_counts.beyond_code, size_t{1});
+    CHECK_EQ(vs.sgpr_counts.equal, size_t{1});
+}
+
 TEST_CASE("pixel interpolation is checked against the enable word") {
     namespace r = sh::rdna2;
     // v_interp_p1_f32 v2, v0, attr0.x; v_interp_p2_f32 v2, v1, attr0.x; v_interp_p1_f32 v3, v4,
