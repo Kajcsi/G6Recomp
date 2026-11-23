@@ -12,9 +12,7 @@
 id = "1.0.2.1"
 package_version = "1.0.2.1"
 exe_name = "game_scarlett_master.exe"
-# While this is empty, the configure step prints the hash of the executable it finds; record it
-# here once that executable is confirmed to be this build.
-exe_sha256 = ""
+exe_sha256 = "e95020b2fa4a721db3df59fdecf75621730ac559d8835252f6c3b658d5a08993"
 
 [build.dll_sha256]
 "Bink2Scarlett.dll" = "9eaf045d004cd7d6a8382aaff0c6ea23a29fec4ef8bfacd726b54f5bc26fafd0"
