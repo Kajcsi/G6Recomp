@@ -66,14 +66,45 @@ desktop DXR builds rather than translate these shaders.
   `amd_fidelityfx_framegeneration_xbox.dll`, isn't in the package. **Checked here:** it isn't in
   our copy either.
 
-With no DXIL, there is nothing to translate here. The plan in [side-dlls.md](side-dlls.md)
-provides the FidelityFX API from the public PC FidelityFX SDK instead.
+With no DXIL, there is no DXIL to translate. The plan in [side-dlls.md](side-dlls.md) provides
+the FidelityFX API from the public PC FidelityFX SDK instead. xcl's report below reopens that
+choice: the `ACCC` parts hold native programs, which a gfx1013 translation can take.
 
+* **Reported** (xcl, `fdeacf0`), not checked on our copy:
+  * Each of the 29 `ACCC` parts holds an `FSPX` container, the console driver's format. The
+    entry count is at +8, then 16-byte entries from +0x10: a type, an offset and a size.
+  * A type 0 entry holds the thread-group size as three 16-bit words at +0x0C, and
+    `COMPUTE_PGM_RSRC1` and `COMPUTE_PGM_RSRC2` at +0x14 and +0x18. A type 6 entry holds the
+    RDNA 2 code after a 0x24-byte header, ending at the last `s_endpgm`. A type 7 entry holds
+    32-byte resource records.
+  * The DLL first tries `DeserializeComputePipelineStateX` and falls back to
+    `CreateComputePipelineState`.
+  * One upscaled frame is 20 dispatches, 24 barriers, 2 clears and 4 copies: about 11 ms on an
+    RX 9070.
+  * xcl translates these programs. Lowering `v_dot4_*_i8` and `_u8` to shader model 6.4's
+    `dot4add_*packed` shrank the biggest pass's DXIL from 1.55 to 1.23 MB and its DXC time from
+    604 to 74 s. Before that, AMD's driver refused the pass with `E_OUTOFMEMORY`. Casting the
+    result of `dot4add_i8packed` to a 64-bit integer crashes DXC.
+  * So translating the upscaler's own programs is an option again, beside the PC FidelityFX
+    SDK. Which one M3 takes is open.
 * **Reported** (Leonida, from these 29 programs, which carry both a root signature and their
   `COMPUTE_PGM_RSRC2`): the user SGPR count is 4 + one per descriptor table + two per root
   CBV, in signature order. s0 to s3 are a driver prefix, and tables are 32-bit pointers from
   s4. That is the only place in the package where a root signature and its native program sit
   side by side.
+
+## The executable's own containers
+
+**Reported** by Leonida (`86fd2fda`), then **checked here** on the 1.0.2.1 executable:
+
+* It carries 10 DXBC containers in its data, 924 to 992 bytes each and 9,548 bytes in all by
+  our reading (Leonida counts 9,520). One more `DXBC` match isn't a container.
+* One is a vertex shader and nine are pixel shaders.
+* Each has the parts `SFI0`, `ISG1`, `OSG1`, `PSV0`, `HASH`, `DXIL` and `PRIV`. None has a root
+  signature or LLVM bitcode: every `DXIL` part holds an `XBCH` record instead, so these are
+  console programs like the scene shaders, not DXIL a PC driver could take.
+* So the executable's few built-in shaders go through the same translation as `shaders.rpf`.
+  Which draws use them isn't known yet.
 
 ## Scene shaders (`shaders.rpf`)
 
@@ -319,8 +350,14 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
 * **Stage records.** xcl reported these ([related-work.md](related-work.md)). **Checked here**
   with `shaderrecomp scan` and held by the local `test_shader_census`:
   * From FSSM byte 0x100 up to the code, each program keeps one 0x88-byte record per stage it is
-    compiled for. Unused fields hold `0xDEADBEEF`. A record opens with a 64-bit word: 0xC00002
-    in the top bits, then the API stage in bits 8 to 15 and the hardware stage in bits 0 to 7.
+    compiled for. A record opens with a 64-bit word: 0xC00002 in the top bits, then the API
+    stage in bits 8 to 15 and the hardware stage in bits 0 to 7.
+  * **Unused fields: conflicting reports,** neither checked on our census. xcl reports that they
+    hold `0xDEADBEEF`. Leonida (`f6c6d11e`), whose records match ours (0x88 bytes from 0x100,
+    the same hardware stage numbers), finds them zero in 25,643 records. Paired `0xDEADBEEF`
+    qwords appear in only 1,055 records (860 blobs): those of the blobs whose directory words at
+    0x120, 0x12C and 0x130 are `0xDEADBEEF`. In 25,643 records, the word at 0x120 plus the word
+    at 0x12C equals the word at 0x130.
   * The hardware stage numbers match AMD's public PAL numbering:
     * 12,101 pixel programs name PS (5).
     * 2,689 compute programs name CS (6).
@@ -646,6 +683,11 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
     driver's recompile adds them. On LDS each adds the number of active lanes to a
     group-shared counter (`ds_consume` subtracts it) and returns the old value, which D3D12
     can express with a group-shared atomic.
+  * Leonida's translator (`db22f2fa`) refuses the `ds_*_src2` add, sub, inc and dec forms, the
+    u64 add and sub forms, `ds_condxchg32_rtn_b64`, and LDS outside compute. LDS outside compute
+    does occur here: in 5 mesh programs, and in the ES and GS halves of the merged geometry
+    stage (see "ES and GS" under "Registers at wave start"). This page doesn't count those DS
+    forms yet.
 * **Ordered pixel shading.** 10 pixel shaders use primitive-ordered pixel shading (POPS).
   Fragment-shader interlock reproduces the ordering; on D3D12 that means rasterizer-ordered
   views.
@@ -690,6 +732,13 @@ scan like that also looks at operand words, so it counts as evidence, not as a d
       rather than checked output, and count 0 of 8 stages as verified.
     * DXC 1.8.2502 is the first version whose module-only validation passes (Xbox2Windows).
     * We choose when the translator starts.
+* **Exec-masked regions** (Xbox2Windows, `03ece06` and `1a252c8`, a backend design idea):
+  * A single forward region from `s_and_saveexec_b64` to the `s_or_b64` that restores exec can
+    be lowered as per-lane selects where exec is restored.
+  * The `s_cbranch_execz` that skips the region can be dropped when every operation in its body
+    is safe on every lane.
+  * SCC after the save and restore is a property of the whole wave, so upstream refuses
+    instructions that read it there.
 * **Wave64 shaders.** They need 64-lane waves or emulation on 32-lane hardware. Shader model
   6.6's `WaveSize` attribute asks for 64 lanes where the hardware supports it (see the host
   constraints below).
@@ -705,7 +754,14 @@ translation depends on it.
   keep the high half. The VOP2 16-bit integer instructions define the whole register. Leonida
   takes this from Mesa's ACO compiler and Xbox2Windows from LLVM. Xbox2Windows now marks it
   unmeasured, `v_cvt_f16_f32` included, so treat it as an assumption until a GPU test settles
-  it. Leonida measured one case: an SDWA result with `dst_sel:DWORD` zeroes the high half.
+  it. Leonida measured one case: an SDWA result with `dst_sel:DWORD` zeroes the high half (see
+  "SDWA" below).
+* **SDWA** (Leonida, `f4cd3061`: 172 distinct forms and about 79,000 instructions in its
+  corpus, about 21,000 cases measured on gfx1036):
+  * Operand-select narrowing happens before negate and absolute value.
+  * `dst_unused` pads, sign-extends, or preserves the bits the result doesn't fill.
+  * A NaN result keeps the input's sign and payload.
+  * `div:2` on −0 gives +0.
 * **Narrowing to f16** rounds to nearest even unless the f16 rounding field says toward zero
   (above). Leonida does it in integer arithmetic because AMD's drivers lower GLSL's
   `PackHalf2x16` to a round-toward-zero conversion. About half of the unorm8 values its d16
@@ -714,6 +770,13 @@ translation depends on it.
   105 ms per frame because its translation emulated f16 rounding in f32. Native 16-bit types
   (`-enable-16bit-types`) with a NaN guard on the conversion took the lobby from about 10 to
   23 frames per second. It checked that conversion against all 2^32 inputs on an RTX 5060.
+* **f16 arithmetic in f32** (Xbox2Windows, `7e0be98`): f16 add, subtract and multiply can be
+  computed in f32 and narrowed once to nearest even. That is exact for every finite input,
+  subnormals and signed zeros included, since f32's 24 bits are at least 2 × 11 + 2. Upstream
+  checked add and multiply exhaustively.
+  * It doesn't hold for the fused f16 FMA: `v_fma_f16` can't be an f32 FMA followed by
+    narrowing (Xbox2Windows, `9fff1ee`, `4a19cec` and `766276f`).
+  * `v_subrev_f16` computes the second source minus the first (from LLVM; unmeasured).
 * **`v_sin` and `v_cos`** take turns, not radians: they compute sin(2πx). Xbox2Windows removes
   the nearest whole number of turns before multiplying by 2π, which keeps the HLSL argument
   within ±π. Leonida measured the f16 forms on a gfx1031 GPU: they reduce exactly over the
@@ -743,17 +806,72 @@ translation depends on it.
   in the low half and zero in the high half. `v_pack_b32_f16` and `v_cvt_f32_f16` read the f32
   bits instead. OPSEL on a constant reads the constant again, and 1/2π is 0x3118. Packed
   16-bit integer instructions read a float constant as the whole 32-bit word.
-* **NaN handling** (gfx1036 probes, via xbox-emulator):
+* **Other operand codes** (Xbox2Windows):
+  * An integer inline constant used as an f32 operand is its raw bit pattern: 1 is the smallest
+    denormal and −1 a NaN pattern (`e114e89`).
+  * Operand codes 235 to 239 and 251 to 254 are hardware values, not constants:
+    `src_shared_base` to `src_pops_exiting_wave_id`, then `src_vccz`, `src_execz`, `src_scc`
+    and `src_lds_direct` (`a99e8da`).
+  * Inline constant 248 in a 64-bit operand is the f64 value of 1/(2π) (`a99e8da`).
+  * Ours: `shaderrecomp`'s decoder names those hardware sources, and `inline_float64` gives an
+    inline float constant's 64-bit value, that one included (tested by `test_rdna2`).
+* **NaN handling** (gfx1036 probes, via xbox-emulator, except where another project is named):
   * With IEEE mode off, the first NaN operand passes through unchanged.
   * An invalid operation without a NaN operand gives 0xFFC00000, and an fma whose product is
-    invalid gives that value even when the addend is a NaN.
+    invalid gives that value even when the addend is a NaN. A CPU reference model has to set
+    that value itself: x86 creates the same 0xFFC00000, but ARM64 creates 0x7FC00000 (Leonida,
+    `ea2cf301`).
   * `v_sub` negates its second source first.
-  * min and max NaN rules depend on IEEE mode.
-  * `v_med3_f32` with a NaN operand gives the minimum of the other two (from the ISA and
-    gfx1030).
+  * **min, max and med3** (Leonida, `a31e3c68`, measured). With quiet NaNs, all four
+    combinations of IEEE mode and `DX10_CLAMP` give the same result. That corrects xbox-emulator's
+    report, given here before, that the min and max NaN rules depend on IEEE mode.
+    * One NaN operand: the other operand's bits, unchanged.
+    * All operands NaN: src0's exact bits, payload included, and with IEEE mode off its
+      signalling bit too.
+    * The same holds for the f16 three-source forms, and per half for the packed forms.
+    * −0 orders below +0.
+    * `min3` and `max3` are two pairwise steps. `med3` with any NaN operand gives `min3`, which
+      with one NaN is the minimum of the other two, as the ISA and gfx1030 say for
+      `v_med3_f32`.
+    * DXIL's `FMin` and `FMax` promise neither the payload nor the −0 ordering, so a translation
+      lowers these to explicit selects.
+  * **Ordered compares.** `v_cmp_lg` is ordered, false when either operand is NaN: it is
+    (a < b) || (a > b). HLSL's `!=` is unordered and would be wrong (Leonida, `5bc7e8b0`).
+    * A compiler backend may fold an ordered compare with abs or neg modifiers, such as
+      −|x| ≤ 2, to true for a NaN. Xbox2Windows (`e114e89`) adds an explicit ordered test on
+      the bits to `lt`, `eq`, `le`, `gt`, `lg` and `ge`. See also "AMD driver folding" under the
+      host constraints.
   * The fused f16 FMAs (VOP2 0x36 to 0x38) return a signalling NaN unquieted with IEEE off.
+* **Output modifier (omod).** Two reports, which partly disagree on f64; neither is checked
+  here:
+  * Leonida (`73fce549`): omod applies only when IEEE mode is off and denormals are flushed for
+    the destination's precision. Under the f16 and f64 denormal setting Leonida reads for the
+    game (kept; see "Other state the programs assume" above), f64 and f16 destinations ignore
+    omod: conversions to f64, `v_frexp_mant_f64`, and `v_div_fixup_f64` and `_f16`. Clamp still
+    applies to them. `v_cvt_f32_f64`, whose destination is f32, does scale.
+  * xcl (`34efd81`, `0056934`): omod applies to f64 instructions too, and to `v_cvt_f32_f64`. On
+    `v_cvt_f16_f32` it is applied in f32, before rounding to f16.
+  * They agree that `v_cvt_f32_f64` scales. They disagree on f64 destinations, and on
+    `v_cvt_f16_f32`, whose destination is f16. The f16 and f64 denormal mode GTA VI's programs
+    run in hasn't been read from the images yet.
+* **Division helpers** (Xbox2Windows, `9fff1ee`, `4a19cec` and `766276f`, except where
+  another project is named):
+  * `v_div_scale_f32` depends on the numerator as well as the denominator. A denominator of 1
+    with a numerator of 2^100 scales by 2^64 and sets VCC, so no rule that looks only at the
+    denominator works.
+  * `v_div_fmas_f32` is a single-rounded FMA, scaled by 2^32 when VCC is set, with the scaling
+    done before the rounding to binary32. Doing it in f64 needs a midpoint correction that
+    covers the binary32 subnormal range. The fixed 2^32 factor isn't confirmed: later AMD
+    guides tie the scale to the third operand's exponent.
+  * `v_div_fixup` (Leonida, `73fce549`): a NaN in the first source gives ±inf. There is an f64
+    underflow cutoff and no overflow check. A signalling NaN passes through with IEEE mode off.
 * **Conversions.** `v_cvt_pknorm_*` rounds the exact product once to nearest and turns NaN into
   0. d16 image loads of 32-bit integer texels saturate. `v_pk_mad` with clamp saturates.
+* **Clamp on integer instructions** (xcl, `34efd81` and `0056934`): the clamp bit saturates
+  instead of wrapping on `v_add_nc_u32`, `v_sub_nc_u32`, `v_subrev_nc_u32`, `v_add3_u32`, the
+  packed 16-bit add, subtract and mad (`v_pk_mad` above among them), and the integer dot
+  products.
+* **24-bit MAD** (Xbox2Windows, `ee5535a`): it truncates both multiplicands to 24 bits.
 * **`s_bfe`** takes a 7-bit width, sign-fills signed fields, and sets SCC when the result isn't
   zero (gfx1036).
 * **Transcendentals** (gfx1036, bit-exact models published by xbox-emulator): the f16 forms
@@ -762,6 +880,14 @@ translation depends on it.
   value. The f32 `log`, `exp`, `sin` and `cos` match AMD's MIT-licensed rocjitsu models.
 * **Buffer bounds** follow Mesa's GFX11 column for each `OOB_SELECT`, not its GFX10 one
   (Leonida, on gfx1036 and gfx1011). In raw mode, soffset counts toward the check.
+* **Byte and short buffer accesses** (Leonida, `8f208d09`):
+  * `_d16` loads write one 16-bit half, the high half for `_d16_hi`, and keep the other. The
+    `ubyte` and `sbyte` forms among them extend the byte to 16 bits.
+  * Byte and short stores write the low 8 or 16 bits; `_d16_hi` stores take the high half.
+  * The bounds check covers the access's own 1 or 2 bytes. An out-of-bounds load returns 0
+    (unmeasured for the d16 forms), and an out-of-bounds store writes nothing.
+  * HLSL has no 8-bit stores, so a byte store becomes a merge into its dword with
+    `InterlockedAnd` and `InterlockedOr`.
 * **Samplers.**
   * The point mip filter picks floor(λ+0.5), so an exact half rounds up (Leonida, gfx1036).
     The T#'s `MIN_LOD` clamps the fractional LOD before that rounding, counting from the
@@ -770,17 +896,50 @@ translation depends on it.
     one. `TRUNC_COORD` is word 0 bit 27: set, the coordinate rounds down; clear, it rounds to
     nearest even at 6 fraction bits (Xbox2Windows, 104 draws on an RTX 3070 and WARP).
   * `image_get_resinfo` gives depth 0 for 2D and minified array layers (Leonida). Past the
-    last level it gives size 0 but keeps the level count (xbox-emulator).
+    last level it gives size 0 but keeps the level count (xbox-emulator). For a cube it gives
+    the layer count, 6 per cube (xcl, `34efd81` and `0056934`).
+  * **Cube textures** (xcl, the same commits): the face coordinate is the face plus 8 times the
+    cube index. The T# doesn't say how many cubes a view holds, so xcl declares every cube as a
+    cube array and takes the LOD from the direction only.
   * `image_gather4_l` lowers to four `SampleLevel` taps, which ignore the sampler's bias and
     LOD clamp (xbox-emulator, on WARP).
+* **Integer pixel inputs: conflicting reports.** xcl reported earlier, from the ISA, that
+  `v_interp_mov` and `v_interp_p2` read integer inputs as raw bits
+  ([related-work.md](related-work.md)). xcl (`58309b9`) has since gone back to converting them
+  to float, because raw bits made XDefiant's UI text disappear. The real cause is still open,
+  so neither reading is settled.
 * **Helper lanes** (Leonida, RADV on gfx1036, wave64): EXEC at entry holds only covered pixels.
   `s_wqm` turns on whole quads, and lane order within a quad is (x&1) + 2(y&1). A helper's v0
   and v1 already hold its own I/J before `s_wqm`.
+* **Which pixels a pixel shader writes** (Leonida, `c26d78af`, measured on gfx1036 with 18
+  programs):
+  * A pixel is written only if its lane was on in EXEC both at the last export that carries
+    `vm`, if there is one, and at the last export to that color target. With no export, EXEC at
+    the end decides.
+  * An export carries data only for active lanes. A later export to the same target replaces
+    the earlier one for the whole wave.
+  * A lane with no data in the last color export stays unwritten, even if a later null export
+    with `done` and `vm` marks it valid.
+  * Measuring this needs `s_waitcnt expcnt(0)` after each export.
 * **Float atomic min and max done as integer atomics** (xcl, RX 7900 XTX): pick the signed or
   unsigned path by comparing the bits with +inf's, not with a float compare, since -0.0 ≥ 0 is
   true. The f64 `_x2` forms map onto 64-bit integer min and max.
+* **Float compare-and-swap** (Leonida, `0f2b802a`, unmeasured on hardware): the float forms of
+  `ds_cmpst`, `global_atomic_fcmpswap` and `buffer_atomic_fcmpswap` compare as floats. −0
+  matches +0, and a NaN never matches, even with identical bits. D3D12's
+  `InterlockedCompareExchangeFloatBitwise` compares bits, so it needs a loop around it. The
+  operand order differs: `ds_cmpst_f32` takes the compare value, then the data; in the global
+  and buffer forms, vdata holds the data first, then the compare value.
 * **Groups of one wave may leave out `s_barrier`** (xbox-emulator), so a translation that runs
   such a group as several host waves has to keep their LDS accesses in order.
+* **permlane** (Leonida, `5a78b4b7`, measured on RDNA 2 and RDNA 3.5): `op_sel` bit 0 is FI
+  (fetch inactive) and bit 1 is BOUND_CTRL. When the source lane is off, FI=1 returns the
+  source value anyway. With FI=0, the old value stays when BOUND_CTRL is 0, and the result is 0
+  when it is 1. Shuffles and ballots have to run before any predication: upstream, a
+  short-circuit select broke this.
+* **Shader clocks** (Leonida, `bd3f061a`): `s_memtime` reads a per-CU shader clock and
+  `s_memrealtime` a reference clock at a constant rate. Both return 64 bits into an SGPR pair,
+  low word first. D3D12 has no portable shader clock, only vendor extensions.
 
 ## Host constraints that affect translation
 
@@ -803,6 +962,20 @@ translation depends on it.
     half. It cost 1.3 times with one console wave per group and about 5 times with four. The
     exchange waits on its partner, which assumes the waves of a group make progress together;
     WARP doesn't promise that and runs neither 32 nor 64 lanes, so WARP can't test this form.
+  * **Reported** by xcl (`af0311d`, `fc60bf5`, `55156f0`), for wave64 vertex and pixel programs
+    on 32-lane GPUs. Its 13,210 wave64 VS and PS programs match our 2,236 VS and 10,974 PS (see
+    "Wave size" under "What the native programs do").
+    * Reads of lanes 32 to 63: 1,082 whole-wave reductions (unsigned min, max, or bitwise or)
+      in 436 programs; 355 waterfall reads in 353 programs, which stay below lane 32; and 200
+      reads of SGPR spill slots in lanes 32 to 47 in 11 programs, which come out wrong on NVIDIA
+      today. None of these programs uses `ds_bpermute`.
+    * Two problems hit every GPU, native AMD wave64 included. Spill slots get lost: 287 pixel
+      shaders (3,540 reads) spill to lanes below 32, and in a partial wave at a primitive's edge
+      a lane the PC never launched loses its slot. Min reductions go wrong: on an RTX 5070 Ti,
+      lanes that weren't launched read 0, so a min reduction gives 0. 325 of the 436 reduction
+      programs have one.
+    * xcl's plan: turn `v_writelane` and `v_readlane` spill slots into scalar variables, and
+      recognise a reduction as a whole rather than lane by lane.
 * **Compute lane order.** **Reported** by xcl: desktop drivers don't keep a 2-D or 3-D compute
   group's threads in order within a wave. An RX 9070 lays them out in 2x2 quads, and NVIDIA's
   waves of an 8x8x4 group don't hold consecutive indices either; 1-D groups stay in order. The
@@ -821,7 +994,9 @@ translation depends on it.
   * **Reported** by Xbox2Windows: without mesh shaders, compute dispatches can write each
     triangle into its own range of one buffer, and vertex draws then read the ranges in order
     into shared colour and depth targets. Depth order held on a GTX 1060 and on Windows 10's
-    in-box WARP, with the draw order reversed and the depths swapped.
+    in-box WARP, with the draw order reversed and the depths swapped. Xbox2Windows (`301bfae`)
+    then lit it at shader model 6.0: with normals interpolated and lighting applied, it matched
+    on a GTX 1060 and on both WARPs.
 * **Feature levels on likely hosts** (Xbox2Windows): an RX 570 on vkd3d-proton exposes shader
   model 6.6, a GTX 1060 runs DXR tier 1.0, and the in-box WARP of Windows 10 19041 has no DXR.
   Tier 1.0 runs `DispatchRays` but not inline `RayQuery`, which needs tier 1.1 and shader model
@@ -837,17 +1012,58 @@ translation depends on it.
   then changed the output at 17 pixels. WARP was exact. So the host's interpolation can differ
   by an ulp before the translation's f16 rounding.
 * **Sampling.**
-  * **Reported** by Xbox2Windows: the `MinLod` blend weight is quantized to 1/256. WARP 1.0.22
-    rounds it, and an RTX 3080 Ti truncates it.
+  * **Reported** by Xbox2Windows (`851b68c`, `eab58b5`): with linear mip filtering, the
+    `MinLod` blend weight is quantized to 1/256. WARP 1.0.22 rounds it to the nearest 1/256,
+    ties to even, and an RX 7900 XTX and Windows 11's in-box WARP agree. An RTX 3080 Ti
+    truncates instead, storing step k as k·256/65535, an offset of up to 7.6e-6.
   * **Reported** by Xbox2Windows (GTX 1060, WARP): a sampler used both for comparison and for
     ordinary sampling needs two host samplers.
-  * **Reported** by Xbox2Windows: Windows 10's in-box WARP (10.0.19041.5794) picks mip 1 for a
-    per-sample `MinLod` clamp of 1.5625 under point mip filtering, where `SampleLevel` at the
-    same LOD picks mip 2. So that WARP is no reference for the clamp-then-round rule above.
+  * **Reported** by Xbox2Windows (`851b68c`, `eab58b5`): under point mip filtering with a
+    `MinLod` clamp, only Windows 10's in-box WARP reads the mip below: a clamp of 0.5625 gives
+    mip 0, 1.5 mip 1, and 2.5625 mip 2, at any shader model. (An earlier report had 10.0.19041.5794
+    pick mip 1 for 1.5625, where `SampleLevel` at the same LOD picks mip 2.) Windows 11's
+    in-box WARP 10.0.26100.9818, an RX 7900 XTX, an RTX 3080 Ti and WARP 1.0.22 pick the nearest
+    mip. So only Windows 10's in-box WARP is no reference for the clamp-then-round rule above.
+  * **Reported** by Leonida (`64890ac2`): D3D12 can't `Sample` an integer SRV, so sampling an
+    integer format goes through derivatives and a matching view.
 * **Blending.** **Reported** by xbox-emulator: fp16 and `R11G11B10_FLOAT` blending saturates a
   finite overflow on WARP and on its GPU.
 * **f16 NaN.** **Reported** by xbox-emulator: an RTX 3080 returns 0x7FFF for an f16 FMA whose
   result is a NaN.
+* **NaN bits through float values.** **Reported** by Xbox2Windows (`24936e2`, merged in
+  `046a2bd`): on NVIDIA, a NaN-shaped word loses bits after passing through a float-typed HLSL
+  value. An RTX 4060 Laptop GPU (32.0.16.1656) and an RTX 3060 (32.0.16.2101) returned
+  0x7FFFFFFF where 0xFFFFFFFF was expected. Declaring the constant buffer `uint4` and converting
+  to float only where a float operation reads it kept the bits. Our rule for the `shaderrecomp`
+  backend: keep registers and loads as `uint`, and convert only where a float operation reads
+  them.
+* **Denormal mode on NVIDIA.** **Reported** by Xbox2Windows: NVIDIA drivers reject some shaders
+  compiled with `-denorm preserve`, failing pipeline creation with `E_OUTOFMEMORY`
+  ([related-work.md](related-work.md)). Its later measurement (`c0f4d9c`) narrows that: on an
+  RTX 5080 (32.0.16.2101 and 32.0.16.2124), any pixel shader that uses `log2` fails under
+  `preserve`, while `ftz` and `any` are accepted. WARP and a Radeon integrated GPU accept
+  `preserve`.
+* **f64 compares on Windows 10's WARP.** **Reported** by Xbox2Windows (`9fff1ee`, `4a19cec`,
+  `766276f`): Windows 10's in-box WARP (10.0.19041) faults at the first dispatch of a double
+  `>` or `<=` (DXIL `fcmp ogt` and `ole`). Its translator emits only `<`, `>=`, `==` and `!=`,
+  swapping the operands where needed.
+* **No f32 FMA in DXIL.** **Reported** by Leonida (`ea2cf301`): DXIL's `mad` may be split into a
+  multiply and an add, and `dx.op.fma` takes only doubles. So a single-rounded f32 FMA needs
+  exact emulation. Xbox2Windows' f64 form of `v_div_fmas_f32`, with its midpoint correction, is
+  one (see "Division helpers" above).
+* **AMD driver folding.** **Reported** by Leonida (`a284bad1`, `399fa980`), on AMD driver
+  26.10.1:
+  * In wave32 it folds an ordered compare against a literal NaN to true, so a translation avoids
+    literal NaN constants.
+  * It mis-evaluated a 16-bit integer `med3` with a constant operand. The sum-minus-min-minus-max
+    form avoids it.
+  * An output modifier turns a −0 the hardware produced into +0.
+  * Without float-controls preservation, it folds `x != x`.
+  * Our inference, not upstream's: DXC emits fast-math flags by default, so a translation marks
+    such operations `precise` or compiles with `-Gis`.
+* **Emulated 64-bit arithmetic on Intel.** **Reported** by Xbox2Windows (`688aa85`): Intel UHD
+  drivers 32.0.101.7026 and 32.0.101.7092 got emulated 64-bit (`uint2`) arithmetic wrong inside
+  a large shader, while the same operation alone was exact.
 * **Shared-exponent UAVs.** **Reported:** typed UAV stores to `R9G9B9E5_SHAREDEXP` work on
   WARP but not on an NVIDIA driver. A translated shader that writes that format through a UAV
   needs a fallback, such as an `R32_UINT` view with the packing done in the shader.
@@ -861,6 +1077,10 @@ translation depends on it.
 * **Atomics on UAV arrays.** **Reported:** with a non-uniform index, they give four times the
   expected result on RDNA 3 and RDNA 4 and on Windows 10's WARP. A `WaveReadLaneFirst` loop that
   handles one distinct index at a time gives the right result.
+  * **Reported** by Xbox2Windows (`224d6fd`): RDNA 2 too. An RX 6500 (32.0.21045.29003) read
+    256 where 64 was expected. Its loop makes one pass per distinct index: each pass picks a
+    leader lane, counts the lanes that share its index, and makes one `InterlockedAdd` of that
+    count. That read 64 on the RX 6500 and on WARP. The cause is still open.
 * **Root signature version 1.2** isn't in the in-box D3D12 of Windows 10 or Windows 11 23H2
   (reported), so a runtime that needs it ships the Agility SDK.
 * **Constant buffer alignment.** **Reported** by xbox-emulator: the console accepts a constant

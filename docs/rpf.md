@@ -60,6 +60,11 @@ Limits:
 * **Gaps.** A gap is either padding or stored data, and the carve doesn't say which.
   `rpfscan` prints the first four bytes of each gap to help tell them apart.
 * **No names.** Carved files have offsets, not names. The names are in the table of contents.
+* **Segment boundaries aren't tested.** Leonida (`30356710`) found that its parallel carve
+  dropped a zlib header starting one byte before a window's end. Our segments are 64 MiB and
+  start on 16-byte boundaries, as streams do, so a header can't start one byte before a
+  segment's end. But `test_rpf9`'s archive never crosses a segment boundary, so the merge of
+  segments has no test.
 
 `classify` labels each file by its first bytes:
 
@@ -129,6 +134,8 @@ The whole scan took about seven minutes here, 263 s of it on `levels.rpf`.
     64 KiB, plus at most one more stream. That bears on the merged-files limit above.
   * `core_bvh4.rpf` has 43 streams of exactly 8 MiB, each a chunk head followed by a
     continuation stream.
+  * A resource's final compressed system page can inflate to only 48 bytes (`6bb95d7c`). Our
+    carve sets no minimum stream size, so a stream that small still counts.
 * **The first gap.** What lies between the data area's start and the first file.
 * **Compression.** Whether any archive data uses a format besides zlib that console hardware
   decompresses. The carve sees zlib and stored data only, and it would report anything else as

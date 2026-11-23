@@ -180,6 +180,10 @@ that:
   * On PC, the SDK's FSR 4 path needs an RDNA 4 GPU; others get its FSR 3 upscaler.
   * Until then `LoadLibraryA` fails and the loader reports the effect as unavailable. The
     frame-generation DLL it can also ask for isn't in the package. **Checked here** and reported.
+  * **Reopened.** xcl (`fdeacf0`) reports that the console-specific parts hold the console
+    driver's own programs, and translates them like the game's shaders ([shaders.md](shaders.md),
+    "amd_fidelityfx_upscaler_xbox"). That makes mapping the DLL and translating its programs an
+    option again, beside the SDK. The DLL stays unmapped until M3 picks one.
 
 ## Tests
 

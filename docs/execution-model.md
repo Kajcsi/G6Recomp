@@ -269,6 +269,12 @@ for the host. The fixes, cheapest first:
 2. Patch the site to call a C++ stub (for hot sites).
 3. Recompile the function (last resort; see below).
 
+Some instructions both CPUs have still give vendor-defined results. **Reported** by
+Xbox2Windows (`e2526e1`): when several inputs of `DPPS` or `DPPD` are NaN, which one the result
+carries differs between Intel and AMD. So on an Intel host such a result can differ from the
+console's in its NaN bits. Nothing here corrects that; it matters only to code that looks at NaN
+payloads.
+
 ### Side DLLs
 
 | Module | Plan |
@@ -277,7 +283,7 @@ for the host. The fixes, cheapest first:
 | XCurl, libHttpClient.GDK | Never mapped. The executable's imports from them bind to offline HLE |
 | Bink2Scarlett | Run natively. Its audio, memory, and file calls go through HLE |
 | amd_fidelityfx_loader_xbox | Run natively. Its `LoadLibrary` goes through the HLE loader |
-| amd_fidelityfx_upscaler_xbox | **Replaced**, never mapped. Its shaders carry no DXIL, so the public PC FidelityFX SDK (MIT) takes its place behind the same five entry points, at M3 |
+| amd_fidelityfx_upscaler_xbox | **Replaced**, never mapped. Its shaders carry no DXIL, so the public PC FidelityFX SDK (MIT) was to take its place behind the same five entry points, at M3. xcl reports that its native programs translate ([shaders.md](shaders.md)), which reopens the choice; M3 decides |
 | XboxBvhBuilder | **Replaced**, never mapped. It builds the console GPU's own BVH format, which no translation could turn into desktop acceleration structures, so DXR builds in `runtime/gpu` take its place, at M3 |
 
 The two former "investigate" rows were settled in [side-dlls.md](side-dlls.md), with the shader
