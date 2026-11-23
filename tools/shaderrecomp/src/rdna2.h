@@ -75,6 +75,7 @@ enum class OperandKind : uint8_t {
     kLiteral,     // value: the trailing 32-bit literal
     kOther,       // value: the operand code, not modelled yet
     kAttribute,   // value: a VOP3 interpolation's src0 field (see interp_attribute)
+    kInterpParam, // value: which parameter v_interp_mov_f32 reads: 0 P10, 1 P20, 2 P0
 };
 
 struct Operand {

@@ -168,9 +168,11 @@ std::pair<size_t, bool> length_of(Encoding encoding, uint32_t w, uint32_t next) 
     case Encoding::kVop1:
     case Encoding::kVopc: return {1, extra_dword_src0(field(w, 0, 9))};
     case Encoding::kVop3:
-        // An interpolation's src0 field holds its attribute, not a source code.
-        return {2, (field(next, 0, 9) == kSrcLiteral && !vop3_interp(field(w, 16, 10))) ||
-                       field(next, 9, 9) == kSrcLiteral || field(next, 18, 9) == kSrcLiteral};
+        // An interpolation never takes a literal: its src0 field holds the attribute, and its
+        // other sources are VGPRs or unused.
+        return {2, !vop3_interp(field(w, 16, 10)) &&
+                       (field(next, 0, 9) == kSrcLiteral || field(next, 9, 9) == kSrcLiteral ||
+                        field(next, 18, 9) == kSrcLiteral)};
     case Encoding::kVop3p:
         return {2, field(next, 0, 9) == kSrcLiteral || field(next, 9, 9) == kSrcLiteral ||
                        field(next, 18, 9) == kSrcLiteral};
@@ -323,8 +325,18 @@ void decode_operands(Instruction& insn) {
                 b.dst(vgpr(vdst));
             }
         }
-        b.src(vop3_interp(insn.opcode) ? op(OperandKind::kAttribute, field(d1, 0, 9))
-                                       : source9(field(d1, 0, 9), literal));
+        if (vop3_interp(insn.opcode)) {
+            // The attribute sits where src0 would, then the I or J register, or the parameter
+            // v_interp_mov_f32 reads. Only p1lv and the f16 p2 take a third source.
+            b.src(op(OperandKind::kAttribute, field(d1, 0, 9)));
+            b.src(insn.opcode == kVop3InterpMovF32 ? op(OperandKind::kInterpParam, field(d1, 9, 9))
+                                                   : source9(field(d1, 9, 9), literal));
+            if (insn.opcode == kVop3InterpP1lvF16 || insn.opcode == kVop3InterpP2F16) {
+                b.src(source9(field(d1, 18, 9), literal));
+            }
+            break;
+        }
+        b.src(source9(field(d1, 0, 9), literal));
         b.src(source9(field(d1, 9, 9), literal));
         b.src(source9(field(d1, 18, 9), literal));
         break;
@@ -346,7 +358,8 @@ void decode_operands(Instruction& insn) {
         insn.imm2 = field(w, 8, 2);
         b.dst(vgpr(field(w, 18, 8)));
         // v_interp_mov_f32 has no I/J register: the field selects P10, P20 or P0.
-        b.src(insn.opcode == 2 ? op(OperandKind::kOther, field(w, 0, 8)) : vgpr(field(w, 0, 8)));
+        b.src(insn.opcode == 2 ? op(OperandKind::kInterpParam, field(w, 0, 8))
+                               : vgpr(field(w, 0, 8)));
         break;
     }
     case Encoding::kDs:
@@ -783,6 +796,13 @@ std::string operand_text(const Operand& operand) {
     case OperandKind::kAttribute:
         return fmt::format("attr{}.{}{}", operand.value & 0x3F, "xyzw"[(operand.value >> 6) & 3],
                            (operand.value & 0x100) != 0 ? " high" : "");
+    case OperandKind::kInterpParam:
+        switch (operand.value) {
+        case 0: return "p10";
+        case 1: return "p20";
+        case 2: return "p0";
+        default: return fmt::format("param{}", operand.value);
+        }
     }
     return "?";
 }

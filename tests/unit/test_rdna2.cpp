@@ -314,22 +314,36 @@ TEST_CASE("VOP3 interpolations keep their attribute, channel and high bit in src
     CHECK_EQ(high->channel, uint8_t{2});
     CHECK(high->high);
 
-    // v_interp_p1ll_f16 v5, attr0.w, v0: the low half.
+    // v_interp_p1ll_f16 v5, attr0.w, v0: the low half. It has no third source, so the zero
+    // in the src2 field isn't a read of s0.
     const r::Instruction p1ll = one({0xD7420005, 0x000200C0});
     CHECK_EQ(r::mnemonic(p1ll), std::string("v_interp_p1ll_f16"));
+    CHECK_EQ(p1ll.src_count, uint8_t{2});
+    CHECK_EQ(r::text(p1ll), std::string("v_interp_p1ll_f16 v5, attr0.w, v0"));
     const std::optional<r::InterpAttribute> low = r::interp_attribute(p1ll);
     REQUIRE(low.has_value());
     CHECK_EQ(low->attribute, uint8_t{0});
     CHECK_EQ(low->channel, uint8_t{3});
     CHECK(!low->high);
 
-    // An attribute field of 255 (attr63.w) isn't the literal code: no literal follows.
+    // v_interp_p1lv_f16 v2, attr1.x, v0, v3 takes P0's half from its third source.
+    const r::Instruction p1lv = one({0xD7430002, 0x040E0001});
+    CHECK_EQ(p1lv.src_count, uint8_t{3});
+    CHECK(p1lv.src[2] == vgpr(3));
+
+    // An attribute field of 255 (attr63.w) isn't the literal code: no literal follows. The src1
+    // field of v_interp_mov_f32 picks P10, P20 or P0.
     const std::vector<r::Instruction> swept =
         r::decode(bytes({0xD6020000, 0x000000FF, 0xBF810000}));
     REQUIRE(swept.size() == 2);
     CHECK_EQ(swept[0].dwords, uint8_t{2});
     CHECK_EQ(r::mnemonic(swept[0]), std::string("v_interp_mov_f32"));
+    CHECK_EQ(r::text(swept[0]), std::string("v_interp_mov_f32 v0, attr63.w, p10"));
+    CHECK_EQ(r::text(one({0xD6020000, 0x00000400})),
+             std::string("v_interp_mov_f32 v0, attr0.x, p0"));
     CHECK_EQ(r::mnemonic(swept[1]), std::string("s_endpgm"));
+    // The VINTRP form names the parameter in its only source.
+    CHECK_EQ(r::text(one({0xC8020002})), std::string("v_interp_mov_f32 v0, p0, attr0.x"));
 
     // Other VOP3 instructions aren't interpolations.
     CHECK(!r::interp_attribute(one({0xD5030000, 0x00020501})).has_value());
