@@ -123,7 +123,8 @@ struct Loader::Impl {
     std::vector<std::filesystem::path> search_paths;
     ImportRegistry imports;
     std::function<std::wstring(const std::filesystem::path&)> guest_path; // may be empty
-    std::map<std::string, ModulePatches, std::less<>> patches;            // by normalize_dll_name
+    uint64_t min_entry_stack_reserve = 0;
+    std::map<std::string, ModulePatches, std::less<>> patches; // by normalize_dll_name
     void* trap_handler = nullptr; // the vectored handler for trapped cpuid and xgetbv, once needed
     ThreadSupport& threads;
     StubHeap stubs;

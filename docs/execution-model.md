@@ -572,7 +572,7 @@ Phases 1, 2, and 4 don't need the main executable.
      `test_crt_args`, where an original `/MD` executable's `main` gets the guest's arguments and
      a DLL it imports sees the line while the loader attaches it.
    * **The runner.** `g6recomp.exe` (`app/g6recomp`, `g6/app/runner.h`) starts the guest
-     process. It installs the crash report, then:
+     process. It checks the host CPU (below), installs the crash report, then:
      1. Finds the executable: `--exe`, a path or a file name in the install, or else the main
         executable of the known build the install holds. CMake writes each build's ID,
         executable name, and SHA-256 from `known_builds.toml` into a header. An executable named
@@ -596,6 +596,29 @@ Phases 1, 2, and 4 don't need the main executable.
      The runner links `g6exetls`, so the executable's static TLS gets index 0. It exits with 2
      for a command line it can't use and 1 when the guest can't be started, and logs why.
 
+     **The host CPU.** The executable uses AVX, AVX2, BMI1, BMI2, FMA, F16C, MOVBE, LZCNT, AES
+     and PCLMULQDQ without checking for them (the scan's baseline, [scan.md](scan.md)). On a host
+     without one of them it would crash at the first such instruction, deep in guest code. So
+     before it loads anything, the runner reads `cpuid` and `xgetbv` and refuses a host that
+     lacks any of 22 features, or whose Windows doesn't save the AVX registers, and names each
+     missing feature. The features Zen 2 has and some AVX2 hosts don't (SSE4a, CLZERO, MONITORX,
+     ADX, CLWB) aren't required: the scan lists their sites, and "CPU features" above gives the
+     fixes.
+
+     **The stack.** The entry point runs on a thread the loader creates with the larger of the
+     executable's stack reserve (1 MiB) and the runner's own (8 MiB, set when it is linked); a
+     thread the guest starts with no stack size gets the runner's reserve from Windows. Host
+     drivers compile shaders on the thread that creates a pipeline, and their compilers recurse
+     with the shader's nesting, which 1 MiB doesn't hold. A thread the guest starts with a size
+     of its own keeps that size.
+
+     **Soft asserts.** A console build's assert is an `int3`, where a devkit's debugger stops;
+     without one, Windows ends the process. Many are soft: the code after them carries on.
+     `--skip-int3` adds a last vectored handler that steps over an `int3` in guest code when no
+     debugger is attached, and logs it once per address. It shows how far the guest gets past
+     them; each address it logs is a finding to fix, not a fix. Host code's `int3` and any other
+     exception are left alone.
+
      Tested by `test_runner`: the argument parsing, the hash, and the build identification in
      process, and `g6recomp.exe` in a child process on an original executable in a folder that
      stands in for an install. Its `main` gets its arguments, finds its own path as
@@ -604,7 +627,11 @@ Phases 1, 2, and 4 don't need the main executable.
      `T:`, which lands in the data directory's temp folder. `test_loader` checks the
      `guest_path` option on its own. The fixture's C++ runtime is linked in: the host's
      `vcruntime140.dll` imports `kernel32.dll`, which the game's policy stubs (its `DllMain`
-     fails on `InitializeCriticalSectionEx`), while the console's imports API sets.
+     fails on `InitializeCriticalSectionEx`), while the console's imports API sets. The fixture
+     also checks the stack reserve of its entry thread and of a thread it starts with no size,
+     and catches its own `int3` unless `--skip-int3` steps over it. The CPU check is tested on
+     made-up `cpuid` answers: a host without AVX2 and LZCNT, one whose Windows doesn't save the
+     AVX registers, one whose highest leaf is 6, and one with nothing.
 
 ## Milestones
 

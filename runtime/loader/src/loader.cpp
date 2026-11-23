@@ -217,7 +217,8 @@ void on_thread_notification(G6ThreadRecord* record, unsigned long reason, void* 
 
 Loader::Impl::Impl(LoaderOptions options)
     : search_paths(std::move(options.search_paths)), imports(std::move(options.imports)),
-      guest_path(std::move(options.guest_path)), threads(ThreadSupport::get()),
+      guest_path(std::move(options.guest_path)),
+      min_entry_stack_reserve(options.min_entry_stack_reserve), threads(ThreadSupport::get()),
       stubs(&describe_thunk, this) {
     Impl* expected = nullptr;
     if (!g_active.compare_exchange_strong(expected, this, std::memory_order_acq_rel)) {
@@ -835,8 +836,9 @@ uint32_t Loader::Impl::run_entry_point(Module::State& module) {
     const auto entry =
         reinterpret_cast<LPTHREAD_START_ROUTINE>(module.base() + module.image.entry_point());
     auto* peb = reinterpret_cast<void*>(__readgsqword(kTebPeb));
-    HANDLE thread = CreateThread(nullptr, static_cast<SIZE_T>(module.image.stack_reserve()), entry,
-                                 peb, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    const uint64_t reserve = std::max(module.image.stack_reserve(), min_entry_stack_reserve);
+    HANDLE thread = CreateThread(nullptr, static_cast<SIZE_T>(reserve), entry, peb,
+                                 STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
     if (thread == nullptr) {
         throw std::runtime_error(fmt::format("cannot start the entry point of {} (error {})",
                                              module.name, GetLastError()));

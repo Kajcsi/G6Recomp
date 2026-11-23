@@ -5,9 +5,12 @@
 #include <cctype>
 #include <cstdint>
 #include <fstream>
+#include <intrin.h>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <windows.h>
@@ -15,6 +18,7 @@
 #include <bcrypt.h>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include "g6/gdk/game_save.h"
 #include "g6/imports/command_line.h"
@@ -33,18 +37,72 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr std::string_view kUsage =
-    "usage: g6recomp --game-dir <dir> [--exe <file>] [--data-dir <dir>] [-- <arguments>]\n"
+    "usage: g6recomp --game-dir <dir> [--exe <file>] [--data-dir <dir>] [--skip-int3]\n"
+    "                [-- <arguments>]\n"
     "\n"
     "  --game-dir <dir>   the install, mounted read-only at G:\n"
     "  --exe <file>       the executable to run: a path, or a file name in the install\n"
     "                     (default: the main executable of the known build there)\n"
     "  --data-dir <dir>   the build's data directory; T: is its temp folder\n"
     "                     (default: %LOCALAPPDATA%\\G6Recomp\\<build ID>)\n"
+    "  --skip-int3        step over each int3 in guest code (a soft assert) and log it\n"
+    "                     once per address; for finding blockers, never for playing\n"
     "  --                 the rest is the guest's command line, after its program name\n"
     "  --help             this text\n";
 
 std::string utf8(const fs::path& path) {
     return io::utf8(path.native());
+}
+
+// A cpuid bit the pre-flight scan's baseline needs (kExtensions in tools/x64recomp/src/scan.cpp).
+// MMX, SSE, SSE2, and long mode are in every x64 CPU, AVX2's gathers and the VEX forms of AES come
+// with AVX2 and AES, and PREFETCHW is a no-op on the Intel CPUs that predate it.
+struct RequiredFeature {
+    std::string_view name;
+    uint32_t leaf;
+    uint32_t subleaf;
+    uint8_t reg; // 0-3: eax, ebx, ecx, edx
+    uint8_t bit;
+};
+
+constexpr uint8_t kEax = 0;
+constexpr uint8_t kEbx = 1;
+constexpr uint8_t kEcx = 2;
+constexpr uint8_t kEdx = 3;
+
+constexpr std::array kRequiredFeatures = {
+    RequiredFeature{"SSE3", 1, 0, kEcx, 0},
+    RequiredFeature{"PCLMULQDQ", 1, 0, kEcx, 1},
+    RequiredFeature{"SSSE3", 1, 0, kEcx, 9},
+    RequiredFeature{"FMA", 1, 0, kEcx, 12},
+    RequiredFeature{"CMPXCHG16B", 1, 0, kEcx, 13},
+    RequiredFeature{"SSE4.1", 1, 0, kEcx, 19},
+    RequiredFeature{"SSE4.2", 1, 0, kEcx, 20},
+    RequiredFeature{"MOVBE", 1, 0, kEcx, 22},
+    RequiredFeature{"POPCNT", 1, 0, kEcx, 23},
+    RequiredFeature{"AES", 1, 0, kEcx, 25},
+    RequiredFeature{"XSAVE", 1, 0, kEcx, 26},
+    RequiredFeature{"AVX", 1, 0, kEcx, 28},
+    RequiredFeature{"F16C", 1, 0, kEcx, 29},
+    RequiredFeature{"RDRAND", 1, 0, kEcx, 30},
+    RequiredFeature{"CLFLUSH", 1, 0, kEdx, 19},
+    RequiredFeature{"BMI1", 7, 0, kEbx, 3},
+    RequiredFeature{"AVX2", 7, 0, kEbx, 5},
+    RequiredFeature{"BMI2", 7, 0, kEbx, 8},
+    RequiredFeature{"XSAVEOPT", 0xD, 1, kEax, 0},
+    RequiredFeature{"LZCNT", 0x80000001, 0, kEcx, 5},
+    RequiredFeature{"RDTSCP", 0x80000001, 0, kEdx, 27},
+};
+
+constexpr uint32_t kOsxsaveBit = 27; // leaf 1, ecx
+constexpr uint64_t kXcr0SseAvx = 0x6;
+
+// XCR0, the register state Windows saves. Only for a CPU whose OSXSAVE bit is set.
+#if defined(__clang__)
+__attribute__((target("xsave")))
+#endif
+uint64_t read_xcr0() {
+    return _xgetbv(0);
 }
 
 bool same_ascii(std::string_view a, std::string_view b) {
@@ -72,6 +130,34 @@ struct HashDestroyer {
     void operator()(void* hash) const { BCryptDestroyHash(static_cast<BCRYPT_HASH_HANDLE>(hash)); }
 };
 
+// --skip-int3. A console build's assert is an int3 that a devkit's debugger stops at; without one,
+// Windows ends the process. Many are soft: the code after them carries on. Stepping over them
+// shows how far the guest gets, and each address is a finding to fix, not a fix.
+LONG CALLBACK skip_guest_int3(EXCEPTION_POINTERS* exception) {
+    if (exception->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT ||
+        IsDebuggerPresent() != FALSE) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    CONTEXT& context = *exception->ContextRecord;
+    // On x64, Windows reports an int3 at its own address.
+    const loader::CodeAddress where = loader::locate_code(context.Rip);
+    if (!where.guest || *reinterpret_cast<const uint8_t*>(context.Rip) != 0xCC) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    static std::mutex mutex;
+    static std::unordered_set<uint64_t> seen;
+    bool first = false;
+    {
+        const std::scoped_lock lock(mutex);
+        first = seen.insert(context.Rip).second;
+    }
+    if (first) {
+        LOG_WARN(runner, "skipped the int3 at {} (--skip-int3)", loader::describe_code(where));
+    }
+    ++context.Rip;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 void check_status(NTSTATUS status, std::string_view what) {
     if (!BCRYPT_SUCCESS(status)) {
         throw std::runtime_error(
@@ -96,6 +182,10 @@ RunOptions parse_arguments(std::span<const std::wstring> arguments) {
         }
         if (argument == L"--help" || argument == L"-h") {
             options.help = true;
+            continue;
+        }
+        if (argument == L"--skip-int3") {
+            options.skip_int3 = true;
             continue;
         }
         fs::path* target = nullptr;
@@ -209,8 +299,67 @@ Identified identify_build(const RunOptions& options, std::span<const KnownBuild>
     return {.exe = exe, .build_id = std::string(build->id)};
 }
 
+namespace {
+
+// The stack reserve in g6recomp.exe's own header.
+uint64_t host_stack_reserve() {
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(GetModuleHandleW(nullptr));
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+        reinterpret_cast<const uint8_t*>(dos) + dos->e_lfanew);
+    return nt->OptionalHeader.SizeOfStackReserve;
+}
+
+} // namespace
+
+std::array<uint32_t, 4> host_cpuid(uint32_t leaf, uint32_t subleaf) {
+    std::array<int, 4> registers{};
+    __cpuidex(registers.data(), static_cast<int>(leaf), static_cast<int>(subleaf));
+    std::array<uint32_t, 4> result{};
+    std::ranges::transform(registers, result.begin(),
+                           [](int value) { return static_cast<uint32_t>(value); });
+    return result;
+}
+
+std::vector<std::string_view> missing_cpu_features(CpuidFunction cpuid, uint64_t xcr0) {
+    const uint32_t max_basic = cpuid(0, 0)[0];
+    const uint32_t max_extended = cpuid(0x80000000, 0)[0];
+    const auto read = [&](uint32_t leaf, uint32_t subleaf) -> std::array<uint32_t, 4> {
+        const bool present = leaf >= 0x80000000 ? leaf <= max_extended : leaf <= max_basic;
+        return present ? cpuid(leaf, subleaf) : std::array<uint32_t, 4>{};
+    };
+    std::vector<std::string_view> missing;
+    for (const RequiredFeature& feature : kRequiredFeatures) {
+        if (((read(feature.leaf, feature.subleaf)[feature.reg] >> feature.bit) & 1) == 0) {
+            missing.emplace_back(feature.name);
+        }
+    }
+    const bool saved =
+        ((read(1, 0)[kEcx] >> kOsxsaveBit) & 1) != 0 && (xcr0 & kXcr0SseAvx) == kXcr0SseAvx;
+    if (!saved) {
+        missing.push_back("AVX state saved by Windows");
+    }
+    return missing;
+}
+
+std::vector<std::string_view> missing_host_cpu_features() {
+    const bool osxsave = ((host_cpuid(1, 0)[kEcx] >> kOsxsaveBit) & 1) != 0;
+    return missing_cpu_features(&host_cpuid, osxsave ? read_xcr0() : 0);
+}
+
 [[noreturn]] void run(const RunOptions& requested) {
+    // First, before code built for AVX2 (the loader's) runs.
+    if (const auto missing = missing_host_cpu_features(); !missing.empty()) {
+        throw std::runtime_error(fmt::format(
+            "this CPU lacks {}, which the game uses without checking; it needs an AVX2 CPU "
+            "(Intel Haswell, AMD Zen, or newer)",
+            fmt::join(missing, ", ")));
+    }
     loader::install_crash_report();
+    if (requested.skip_int3) {
+        // Last in line, so the loader's own handlers see every exception first.
+        AddVectoredExceptionHandler(0, &skip_guest_int3);
+        LOG_WARN(runner, "--skip-int3: int3 in guest code is stepped over, not reported");
+    }
 
     RunOptions options = requested;
     options.game_dir = fs::absolute(options.game_dir).lexically_normal();
@@ -252,6 +401,9 @@ Identified identify_build(const RunOptions& options, std::span<const KnownBuild>
     loader::LoaderOptions loader_options;
     loader_options.search_paths.push_back(options.game_dir);
     loader_options.imports = imports::default_game_policy();
+    // The entry point's thread gets the reserve g6recomp.exe is linked with, as the threads the
+    // guest starts with no stack size do (app/CMakeLists.txt says why).
+    loader_options.min_entry_stack_reserve = host_stack_reserve();
     loader_options.guest_path = [](const fs::path& file) {
         return io::active_file_system().console_path_of(file.native()).value_or(file.native());
     };

@@ -12,5 +12,9 @@ g6_target_defaults(g6runner)
 # "TLS and the TEB"), so the runner links g6exetls and declares no TLS of its own.
 add_executable(g6recomp g6recomp/src/main.cpp)
 target_link_libraries(g6recomp PRIVATE g6runner g6exetls)
-target_link_options(g6recomp PRIVATE /SUBSYSTEM:CONSOLE)
+# An 8 MiB stack reserve (docs/execution-model.md, "The runner"). The guest's entry point runs on
+# the runner's main thread, and a thread the guest starts with no stack size gets this reserve,
+# from the runner's header rather than the game's (1 MiB). Shader compilers in host drivers run on
+# the thread that creates a pipeline and recurse with the shader's nesting; 1 MiB overflows.
+target_link_options(g6recomp PRIVATE /SUBSYSTEM:CONSOLE /STACK:8388608)
 g6_target_defaults(g6recomp)

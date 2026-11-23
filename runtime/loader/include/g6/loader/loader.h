@@ -82,6 +82,9 @@ struct LoaderOptions {
     // Unset, it reports `file` itself. The runner gives console paths (docs/io.md), so the guest
     // can open its own files by those paths. Called on guest threads, so it must be thread-safe.
     std::function<std::wstring(const std::filesystem::path& file)> guest_path;
+    // The least stack reserve run_entry_point gives the entry point's thread, when the
+    // executable's header asks for less. The runner gives the reserve it is linked with.
+    uint64_t min_entry_stack_reserve = 0;
 };
 
 class Loader {
@@ -101,7 +104,8 @@ public:
     Module load(const std::filesystem::path& path, uint64_t base = 0);
 
     // Runs the executable's entry point on a new thread with the stack reserve from its PE
-    // header, waits for it, and returns its exit code. The entry point gets the PEB, as on
+    // header (at least LoaderOptions::min_entry_stack_reserve), waits for it, and returns its
+    // exit code. The entry point gets the PEB, as on
     // Windows. It must return rather than exit the process.
     uint32_t run_entry_point(Module executable);
 

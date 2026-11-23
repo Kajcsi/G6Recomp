@@ -16,6 +16,15 @@
 #define G6_RUNNER_DATA "data from the install"
 #define G6_RUNNER_COPY_FILE "runner_copy.txt"
 
+/* A third argument that makes the guest run an int3 under an __except block and end at once with
+   G6_RUNNER_INT3_SKIPPED, when g6recomp's --skip-int3 stepped over it, or G6_RUNNER_INT3_CAUGHT,
+   when the block caught it. */
+#define G6_RUNNER_INT3_ARGUMENT "int3"
+
+/* The stack reserve g6recomp.exe is linked with (app/CMakeLists.txt). The guest's main thread and
+   a thread it starts with no stack size both get it. */
+enum { G6_RUNNER_STACK_RESERVE = 8 << 20 };
+
 /* The guest's exit codes: G6_RUNNER_OK when everything was as the test arranged, otherwise the
    first check that failed. */
 enum {
@@ -29,4 +38,8 @@ enum {
     G6_RUNNER_BAD_MODULE_PATH = 16,
     G6_RUNNER_BAD_PROGRAM = 17,
     G6_RUNNER_NO_PROGRAM_FILE = 18,
+    G6_RUNNER_SMALL_STACK = 19,
+    G6_RUNNER_SMALL_THREAD_STACK = 20,
+    G6_RUNNER_INT3_SKIPPED = 21,
+    G6_RUNNER_INT3_CAUGHT = 22,
 };

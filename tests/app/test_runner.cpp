@@ -118,11 +118,15 @@ TEST_CASE("The runner's options and the guest's arguments are read from its comm
     CHECK(options.arguments[0] == L"--exe");
     CHECK(options.arguments[1] == L"two words");
     CHECK(!options.help);
+    CHECK(!options.skip_int3);
 
     const RunOptions minimal = parse_arguments(std::vector<std::wstring>{L"--game-dir", L"x"});
     CHECK(minimal.exe.empty());
     CHECK(minimal.data_dir.empty());
     CHECK(minimal.arguments.empty());
+
+    CHECK(
+        parse_arguments(std::vector<std::wstring>{L"--game-dir", L"x", L"--skip-int3"}).skip_int3);
 
     CHECK(parse_arguments(std::vector<std::wstring>{L"--help"}).help);
 }
@@ -135,6 +139,75 @@ TEST_CASE("A command line the runner can't use is a usage error") {
     CHECK_THROWS_AS(parse_arguments(Arguments{L"--game-dir", L""}), UsageError);
     CHECK_THROWS_AS(parse_arguments(Arguments{L"--game-dir", L"x", L"--fast"}), UsageError);
     CHECK_THROWS_AS(parse_arguments(Arguments{L"--game-dir", L"x", L"extra"}), UsageError);
+}
+
+namespace {
+
+// A CPU that reports the features in `bits`, by leaf, and nothing in leaves above `max_basic`.
+struct FakeCpu {
+    uint32_t max_basic = 0xD;
+    std::array<uint32_t, 4> leaf1{};
+    std::array<uint32_t, 4> leaf7{};
+    std::array<uint32_t, 4> leafD1{};
+    std::array<uint32_t, 4> leaf80000001{};
+};
+
+FakeCpu g_cpu;
+
+std::array<uint32_t, 4> fake_cpuid(uint32_t leaf, uint32_t subleaf) {
+    switch (leaf) {
+    case 0: return {g_cpu.max_basic, 0, 0, 0};
+    case 1: return g_cpu.leaf1;
+    case 7: return subleaf == 0 ? g_cpu.leaf7 : std::array<uint32_t, 4>{};
+    case 0xD: return subleaf == 1 ? g_cpu.leafD1 : std::array<uint32_t, 4>{};
+    case 0x80000000: return {0x80000008, 0, 0, 0};
+    case 0x80000001: return g_cpu.leaf80000001;
+    default: return {};
+    }
+}
+
+constexpr uint64_t kXcr0Avx = 0x7;
+
+// Every feature the runner asks for, and OSXSAVE.
+FakeCpu haswell() {
+    FakeCpu cpu;
+    cpu.leaf1 = {0, 0, 0xFFFFFFFF, 0xFFFFFFFF};
+    cpu.leaf7 = {0, 0xFFFFFFFF, 0, 0};
+    cpu.leafD1 = {0xFFFFFFFF, 0, 0, 0};
+    cpu.leaf80000001 = {0, 0, 0xFFFFFFFF, 0xFFFFFFFF};
+    return cpu;
+}
+
+} // namespace
+
+TEST_CASE("The runner names the baseline CPU features a host lacks") {
+    using g6::app::missing_cpu_features;
+    using Names = std::vector<std::string_view>;
+
+    g_cpu = haswell();
+    CHECK(missing_cpu_features(&fake_cpuid, kXcr0Avx).empty());
+
+    g_cpu.leaf7[1] &= ~(1u << 5);        // AVX2
+    g_cpu.leaf80000001[2] &= ~(1u << 5); // LZCNT
+    CHECK((missing_cpu_features(&fake_cpuid, kXcr0Avx) == Names{"AVX2", "LZCNT"}));
+
+    // AVX that Windows doesn't save is no AVX.
+    g_cpu = haswell();
+    CHECK(missing_cpu_features(&fake_cpuid, 0x3) == Names{"AVX state saved by Windows"});
+    g_cpu.leaf1[2] &= ~(1u << 27); // OSXSAVE
+    CHECK(missing_cpu_features(&fake_cpuid, kXcr0Avx) == Names{"AVX state saved by Windows"});
+
+    // Leaves above the highest one the CPU has read as zero.
+    g_cpu = haswell();
+    g_cpu.max_basic = 6;
+    CHECK(
+        (missing_cpu_features(&fake_cpuid, kXcr0Avx) == Names{"BMI1", "AVX2", "BMI2", "XSAVEOPT"}));
+
+    g_cpu = FakeCpu{};
+    CHECK(missing_cpu_features(&fake_cpuid, 0).size() == 22);
+
+    // Whatever runs the tests runs the game's code too.
+    CHECK(g6::app::missing_host_cpu_features().empty());
 }
 
 TEST_CASE("A file's SHA-256 is its contents' digest in lower-case hex") {
@@ -204,6 +277,26 @@ TEST_CASE("g6recomp runs a guest with the install at G: and the data directory's
     CHECK_EQ(code, uint32_t{G6_RUNNER_OK});
     CHECK_EQ(read_file(data / "temp" / G6_RUNNER_COPY_FILE), std::string(G6_RUNNER_DATA));
     CHECK(!fs::exists(install / G6_RUNNER_COPY_FILE));
+}
+
+TEST_CASE("g6recomp steps over an int3 in guest code only when asked") {
+    const TempFolder folder;
+    const fs::path install = folder.path() / "install";
+    make_install(install);
+    const std::vector<std::wstring> run = {L"--game-dir", install.native(),
+                                           L"--exe",      L"runner_guest.exe",
+                                           L"--data-dir", (folder.path() / "data").native()};
+    const std::vector<std::wstring> guest = {L"--", kArgument1, kArgument2,
+                                             L"" G6_RUNNER_INT3_ARGUMENT};
+
+    std::vector<std::wstring> plain = run;
+    plain.insert(plain.end(), guest.begin(), guest.end());
+    CHECK_EQ(run_g6recomp(plain), uint32_t{G6_RUNNER_INT3_CAUGHT});
+
+    std::vector<std::wstring> skipping = run;
+    skipping.emplace_back(L"--skip-int3");
+    skipping.insert(skipping.end(), guest.begin(), guest.end());
+    CHECK_EQ(run_g6recomp(skipping), uint32_t{G6_RUNNER_INT3_SKIPPED});
 }
 
 TEST_CASE("g6recomp refuses what it can't run, without starting the guest") {
