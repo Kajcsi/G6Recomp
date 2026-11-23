@@ -17,6 +17,10 @@ class ImportRegistry;
 
 namespace g6::imports::kernelbase {
 
+// On a read-only mount an open that would write fails as Win32 orders it: TRUNCATE_EXISTING
+// without GENERIC_WRITE with ERROR_INVALID_PARAMETER, a missing directory on the way with
+// ERROR_PATH_NOT_FOUND, a missing file that must exist with ERROR_FILE_NOT_FOUND, and anything
+// else with ERROR_ACCESS_DENIED.
 HANDLE WINAPI CreateFileW(LPCWSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                           DWORD disposition, DWORD flags, HANDLE template_file);
 HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
@@ -64,6 +68,8 @@ BOOL WINAPI CopyFileExA(LPCSTR existing, LPCSTR destination, LPPROGRESS_ROUTINE 
                         LPVOID data, LPBOOL cancel, DWORD flags);
 BOOL WINAPI CopyFileW(LPCWSTR existing, LPCWSTR destination, BOOL fail_if_exists);
 BOOL WINAPI CopyFileA(LPCSTR existing, LPCSTR destination, BOOL fail_if_exists);
+// Fails with E_INVALIDARG, before it looks at either path, when the extended parameters are ones
+// Win32 refuses (detail::valid_copy_file2_parameters).
 HRESULT WINAPI CopyFile2(PCWSTR existing, PCWSTR destination,
                          COPYFILE2_EXTENDED_PARAMETERS* parameters);
 
@@ -76,8 +82,18 @@ BOOL WINAPI ReplaceFileA(LPCSTR replaced, LPCSTR replacement, LPCSTR backup, DWO
                          LPVOID exclude, LPVOID reserved);
 
 namespace detail {
-// What CopyFile2 does on a host without one (Wine 9): CopyFileExW on the host paths, with the
-// flags CopyFileExW knows and the cancel flag. The progress routine isn't called.
+// Whether Win32's CopyFile2 takes these extended parameters (measured on Windows 11): none, or
+// the first or second version of the structure by its exact size; no dwCopyFlags bit 0x40000000;
+// and in the second version, only the defined dwCopyFlagsV2 bits, an I/O size of zero or within
+// COPYFILE2_IO_CYCLE_SIZE_MIN to _MAX, an I/O rate of zero or at least COPYFILE2_IO_RATE_MIN,
+// and zeroed reserved fields.
+bool valid_copy_file2_parameters(const COPYFILE2_EXTENDED_PARAMETERS* parameters);
+
+// What CopyFile2 does on a host without one (Wine 9), for parameters it has checked: CopyFileExW
+// on the host paths, with the flags CopyFileExW knows, the cancel flag, and the second version's
+// old-style progress routine. A CopyFile2 progress routine isn't called. Copying a directory or a
+// reparse point as such (COPY_FILE_DIRECTORY, COPY_FILE_OPEN_AND_COPY_REPARSE_POINT) fails with
+// ERROR_NOT_SUPPORTED; on an ordinary file those flags change nothing.
 HRESULT copy_file2_fallback(PCWSTR existing, PCWSTR destination,
                             const COPYFILE2_EXTENDED_PARAMETERS* parameters);
 } // namespace detail

@@ -148,7 +148,7 @@ TEST_CASE("CreateFile reads the install and refuses to write it") {
     for (const Write write :
          {Write{GENERIC_WRITE, OPEN_EXISTING, 0}, Write{FILE_APPEND_DATA, OPEN_EXISTING, 0},
           Write{DELETE, OPEN_EXISTING, 0}, Write{GENERIC_READ, CREATE_ALWAYS, 0},
-          Write{GENERIC_READ, TRUNCATE_EXISTING, 0}, Write{GENERIC_READ, CREATE_NEW, 0},
+          Write{GENERIC_WRITE, TRUNCATE_EXISTING, 0}, Write{GENERIC_READ, CREATE_NEW, 0},
           Write{GENERIC_READ, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE}}) {
         INFO("access " + std::to_string(write.access) + ", disposition " +
              std::to_string(write.disposition));
@@ -184,6 +184,50 @@ TEST_CASE("CreateFile reads the install and refuses to write it") {
     REQUIRE(file != INVALID_HANDLE_VALUE);
     CHECK_EQ(read_all(file), std::string("hello"));
     CloseHandle(file);
+}
+
+TEST_CASE("CreateFile refuses writes on the install in the order Win32 checks them") {
+    const Drives drives;
+    struct Open {
+        const wchar_t* path;
+        DWORD access;
+        DWORD disposition;
+        DWORD error;
+    };
+    // Truncating without GENERIC_WRITE is a bad parameter before anything else, on either mount;
+    // then a missing directory, then a missing file that must exist, then the refusal itself.
+    for (const Open open : {
+             Open{L"G:\\data.txt", GENERIC_READ, TRUNCATE_EXISTING, ERROR_INVALID_PARAMETER},
+             Open{L"G:\\missing.txt", GENERIC_READ, TRUNCATE_EXISTING, ERROR_INVALID_PARAMETER},
+             Open{L"G:\\data.txt", GENERIC_ALL, TRUNCATE_EXISTING, ERROR_INVALID_PARAMETER},
+             Open{L"G:\\data.txt", MAXIMUM_ALLOWED, TRUNCATE_EXISTING, ERROR_INVALID_PARAMETER},
+             Open{L"T:\\missing.txt", GENERIC_READ, TRUNCATE_EXISTING, ERROR_INVALID_PARAMETER},
+             Open{L"G:\\nodir\\x.txt", GENERIC_WRITE, TRUNCATE_EXISTING, ERROR_PATH_NOT_FOUND},
+             Open{L"G:\\nodir\\x.txt", GENERIC_READ, CREATE_NEW, ERROR_PATH_NOT_FOUND},
+             Open{L"G:\\nodir\\x.txt", GENERIC_READ, OPEN_ALWAYS, ERROR_PATH_NOT_FOUND},
+             Open{L"G:\\missing.txt", GENERIC_WRITE, TRUNCATE_EXISTING, ERROR_FILE_NOT_FOUND},
+             Open{L"G:\\missing.txt", GENERIC_WRITE, OPEN_EXISTING, ERROR_FILE_NOT_FOUND},
+             Open{L"G:\\missing.txt", GENERIC_READ, CREATE_NEW, ERROR_ACCESS_DENIED},
+             Open{L"G:\\missing.txt", GENERIC_WRITE, CREATE_ALWAYS, ERROR_ACCESS_DENIED},
+             Open{L"G:\\data.txt", GENERIC_WRITE, TRUNCATE_EXISTING, ERROR_ACCESS_DENIED},
+         }) {
+        INFO(g6::io::utf8(open.path) + ", access " + std::to_string(open.access) +
+             ", disposition " + std::to_string(open.disposition));
+        HANDLE refused = INVALID_HANDLE_VALUE;
+        const DWORD error = last_error_of([&] {
+            refused =
+                k::CreateFileW(open.path, open.access, 0, nullptr, open.disposition, 0, nullptr);
+        });
+        CHECK(refused == INVALID_HANDLE_VALUE);
+        CHECK_EQ(error, open.error);
+    }
+    const DWORD error = last_error_of([] {
+        CHECK(k::CreateFile2(L"G:\\data.txt", GENERIC_READ, 0, TRUNCATE_EXISTING, nullptr) ==
+              INVALID_HANDLE_VALUE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_INVALID_PARAMETER});
+    CHECK(size_of(drives.install() / "data.txt") == 5);
+    CHECK(!fs::exists(drives.install() / "nodir"));
 }
 
 TEST_CASE("CreateFile writes to the temp drive and refuses paths outside the mounts") {
@@ -335,6 +379,118 @@ TEST_CASE("directories and files are created, moved, and removed on the temp dri
 
     CHECK(k::DeleteFileA("T:\\moved.txt") != FALSE);
     CHECK(!fs::exists(drives.temp() / "moved.txt"));
+}
+
+namespace {
+
+int g_old_progress_calls = 0;
+void* g_old_progress_data = nullptr;
+
+DWORD CALLBACK old_progress(LARGE_INTEGER /*total*/, LARGE_INTEGER /*transferred*/,
+                            LARGE_INTEGER /*stream*/, LARGE_INTEGER /*stream_transferred*/,
+                            DWORD /*stream_number*/, DWORD /*reason*/, HANDLE /*source*/,
+                            HANDLE /*destination*/, LPVOID data) {
+    ++g_old_progress_calls;
+    g_old_progress_data = data;
+    return PROGRESS_CONTINUE;
+}
+
+COPYFILE2_EXTENDED_PARAMETERS_V2 second_version() {
+    COPYFILE2_EXTENDED_PARAMETERS_V2 parameters{};
+    parameters.dwSize = sizeof(parameters);
+    return parameters;
+}
+
+HRESULT copy_file2(PCWSTR existing, PCWSTR destination,
+                   COPYFILE2_EXTENDED_PARAMETERS_V2& parameters) {
+    return k::CopyFile2(existing, destination,
+                        reinterpret_cast<COPYFILE2_EXTENDED_PARAMETERS*>(&parameters));
+}
+
+} // namespace
+
+TEST_CASE("CopyFile2 checks its parameters before either path, as Win32 does") {
+    const Drives drives;
+    // A size that is neither version's fails even when both paths would: a missing source, and a
+    // destination on the read-only install.
+    for (const DWORD size : {0ul, 31ul, 40ul, 111ul, 120ul}) {
+        INFO("size " + std::to_string(size));
+        COPYFILE2_EXTENDED_PARAMETERS parameters{};
+        parameters.dwSize = size;
+        CHECK(k::CopyFile2(L"G:\\missing.txt", L"G:\\copy.txt", &parameters) == E_INVALIDARG);
+    }
+    COPYFILE2_EXTENDED_PARAMETERS refused_flag{};
+    refused_flag.dwSize = sizeof(refused_flag);
+    refused_flag.dwCopyFlags = 0x40000000;
+    CHECK(k::CopyFile2(L"G:\\missing.txt", L"G:\\copy.txt", &refused_flag) == E_INVALIDARG);
+
+    struct Bad {
+        const char* what;
+        void (*set)(COPYFILE2_EXTENDED_PARAMETERS_V2&);
+    };
+    for (const Bad bad : {
+             Bad{"an undefined V2 flag", [](auto& p) { p.dwCopyFlagsV2 = 0x4; }},
+             Bad{"an I/O size below the least",
+                 [](auto& p) { p.ioDesiredSize = COPYFILE2_IO_CYCLE_SIZE_MIN - 1; }},
+             Bad{"an I/O size above the most",
+                 [](auto& p) { p.ioDesiredSize = COPYFILE2_IO_CYCLE_SIZE_MAX + 1; }},
+             Bad{"an I/O rate below the least",
+                 [](auto& p) { p.ioDesiredRate = COPYFILE2_IO_RATE_MIN - 1; }},
+             Bad{"a reserved field set", [](auto& p) { p.reserved[0] = &p; }},
+         }) {
+        INFO(bad.what);
+        auto parameters = second_version();
+        bad.set(parameters);
+        CHECK(copy_file2(L"G:\\data.txt", L"T:\\copy.txt", parameters) == E_INVALIDARG);
+        CHECK(!fs::exists(drives.temp() / "copy.txt"));
+    }
+
+    // Undefined first-version flags other than that one are taken, as are the second version's
+    // bounds and flags.
+    COPYFILE2_EXTENDED_PARAMETERS undefined_flag{};
+    undefined_flag.dwSize = sizeof(undefined_flag);
+    undefined_flag.dwCopyFlags = 0x100;
+    CHECK(k::CopyFile2(L"G:\\data.txt", L"T:\\copy.txt", &undefined_flag) == S_OK);
+    auto parameters = second_version();
+    parameters.dwCopyFlags = COPY_FILE_FAIL_IF_EXISTS;
+    parameters.dwCopyFlagsV2 = COPY_FILE2_V2_DISABLE_BLOCK_CLONING;
+    parameters.ioDesiredSize = COPYFILE2_IO_CYCLE_SIZE_MIN;
+    parameters.ioDesiredRate = COPYFILE2_IO_RATE_MIN;
+    CHECK(copy_file2(L"G:\\data.txt", L"T:\\copy.txt", parameters) ==
+          HRESULT_FROM_WIN32(ERROR_FILE_EXISTS));
+    parameters.dwCopyFlags = 0;
+    CHECK(copy_file2(L"G:\\data.txt", L"T:\\copy.txt", parameters) == S_OK);
+    CHECK(size_of(drives.temp() / "copy.txt") == 5);
+}
+
+TEST_CASE("CopyFile2 without a host CopyFile2 copies what CopyFileExW can") {
+    const Drives drives;
+    const std::wstring source = (drives.install() / "data.txt").wstring();
+    const std::wstring directory = (drives.install() / "sub").wstring();
+    const std::wstring copy = (drives.temp() / "fallback.txt").wstring();
+
+    // The second version's old-style progress routine is called with the callback context.
+    g_old_progress_calls = 0;
+    g_old_progress_data = nullptr;
+    auto parameters = second_version();
+    parameters.pProgressRoutineOld = old_progress;
+    parameters.pvCallbackContext = &parameters;
+    CHECK(k::detail::copy_file2_fallback(
+              source.c_str(), copy.c_str(),
+              reinterpret_cast<COPYFILE2_EXTENDED_PARAMETERS*>(&parameters)) == S_OK);
+    CHECK(g_old_progress_calls > 0);
+    CHECK(g_old_progress_data == &parameters);
+    fs::remove(drives.temp() / "fallback.txt");
+
+    // Copying a directory as such is refused; on a file the flag changes nothing.
+    COPYFILE2_EXTENDED_PARAMETERS as_directory{};
+    as_directory.dwSize = sizeof(as_directory);
+    as_directory.dwCopyFlags = COPY_FILE_DIRECTORY;
+    CHECK(k::detail::copy_file2_fallback(directory.c_str(), copy.c_str(), &as_directory) ==
+          HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    CHECK(!fs::exists(drives.temp() / "fallback.txt"));
+    CHECK(k::detail::copy_file2_fallback(source.c_str(), copy.c_str(), &as_directory) == S_OK);
+    CHECK(size_of(drives.temp() / "fallback.txt") == 5);
 }
 
 namespace {

@@ -246,6 +246,7 @@ copy, and port code only where it fits our design.
 | `data.rpf` has 377 unread non-zero ranges (4.2%); streams aren't always 4 KiB-aligned; a resource's system part ends at a stream whose inflated size is a multiple of 64 KiB, plus at most one more; `core_bvh4.rpf` has 43 streams of exactly 8 MiB | Reported | [rpf.md](rpf.md) |
 | Host `GameInput.dll` can be bound from mapped code (GameInput 0.2309); v0's `GetTemporalReading` returns `E_NOTIMPL` by design; a title's raw mouse registration replaces any of our own | Reported | Later: `runtime/input` (M4) |
 | Threads that exist before the loader starts (pool workers, host libraries' threads) need the guest's static TLS too; Leonida lists the process's threads and writes the template through each TEB | Taken as a problem, solved our own way: the thread notifier became a TLS callback in the host executable, which sees every thread from the start of the process. We measured that an exiting thread clears its TLS array pointer outside the loader lock, so writing through threads we were never told about could hit freed memory. `test_tls_order` checks a thread started before anything else | [execution-model.md](execution-model.md) |
+| Its `CopyFile2` fallback refuses copy flags `CopyFileExW` can't honour instead of dropping them | Taken as a rule, our own code: the fallback refuses copying a directory or a reparse point as such, and only when the source is one; on an ordinary file those flags change nothing. Windows 11's own parameter checks, measured here, now come first on every host | [hle-status.md](hle-status.md) |
 
 ### Not taken
 
@@ -599,8 +600,8 @@ design depends on them:
 | The driver links pixel inputs by register, so a pixel shader that declares only the inputs it reads is refused; every input has to be declared | Reported | Later: `shaderrecomp` (M3) |
 | Translated shaders reach title memory through window buffers rather than the resources a barrier names, so each batch with a UAV barrier or a transition to `UNORDERED_ACCESS` gets one UAV barrier for all resources | Reported | Later: `runtime/gpu` (M3) |
 | `PresentX` has to queue the present copy before it reports the flip, and keep the copy's source until the copy's fence; aliasing barriers must keep placed textures; resetting write-watch when a range is registered drops other users' pending CPU writes | Reported, seen on Unicorn Overlord and XDefiant | Later: `runtime/gpu` and `memory_tracker` (M3) |
-
 | `GetModuleHandle` on a DLL the title never imported or loaded returns null on Windows, so a stand-in for every DLL the policy covers made an optional DLL look present | Taken, our own code: a policy DLL counts as loaded once a guest module imports or loads it, and an API set while its host DLL is loaded, as measured on the host. `test_loader` checks both | [hle-status.md](hle-status.md) |
+| `CreateFile` with `TRUNCATE_EXISTING` needs `GENERIC_WRITE` and fails with `ERROR_INVALID_PARAMETER` otherwise | Checked here on Windows 11 26200: the check comes before the file is looked for, and neither `GENERIC_ALL`, `FILE_WRITE_DATA` nor `MAXIMUM_ALLOWED` passes it. Taken, our own code, for the read-only mount, which also reports a missing directory or file before refusing a write; the host does the rest | [hle-status.md](hle-status.md) |
 
 The lessons from its HLSL translator are in [shaders.md](shaders.md), "Host constraints that
 affect translation".

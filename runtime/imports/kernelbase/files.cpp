@@ -145,9 +145,33 @@ struct OpenRequest {
     bool existed = false; // OPEN_ALWAYS turned into OPEN_EXISTING on a read-only mount
 };
 
+// The error for an open that a read-only mount refuses. Win32 looks the name up before it checks
+// what the open may do (measured on Windows 11), so a missing directory on the way is
+// ERROR_PATH_NOT_FOUND whatever the open asks, and a missing file the disposition needs is
+// ERROR_FILE_NOT_FOUND. Only an open that finds what it needs, or would create a file, is
+// ERROR_ACCESS_DENIED.
+DWORD refusal(const Resolved& resolved, DWORD disposition) {
+    if (::GetFileAttributesW(resolved.host.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        const bool must_exist = disposition == OPEN_EXISTING || disposition == TRUNCATE_EXISTING;
+        if (error == ERROR_PATH_NOT_FOUND || (error == ERROR_FILE_NOT_FOUND && must_exist)) {
+            return error;
+        }
+    }
+    return ERROR_ACCESS_DENIED;
+}
+
 OpenRequest plan_open(const Resolved& resolved, DWORD access, DWORD disposition, DWORD flags) {
     OpenRequest request{.access = access, .disposition = disposition};
+    // On a writable mount the host checks everything itself.
     if (resolved.writable()) {
+        return request;
+    }
+    // Win32 refuses to truncate without the GENERIC_WRITE bit itself (GENERIC_ALL, FILE_WRITE_DATA,
+    // or MAXIMUM_ALLOWED won't do) before it looks for the file: ERROR_INVALID_PARAMETER, even for
+    // a missing one (measured on Windows 11, for CreateFileW and CreateFile2).
+    if (disposition == TRUNCATE_EXISTING && (access & GENERIC_WRITE) == 0) {
+        request.error = ERROR_INVALID_PARAMETER;
         return request;
     }
     // A read-only mount grants reading at most.
@@ -158,13 +182,13 @@ OpenRequest plan_open(const Resolved& resolved, DWORD access, DWORD disposition,
                         (flags & FILE_FLAG_DELETE_ON_CLOSE) != 0 || disposition == CREATE_NEW ||
                         disposition == CREATE_ALWAYS || disposition == TRUNCATE_EXISTING;
     if (writes) {
-        request.error = ERROR_ACCESS_DENIED;
+        request.error = refusal(resolved, disposition);
         return request;
     }
     if (disposition == OPEN_ALWAYS) {
         // Opens an existing file as it would, and refuses to create a missing one.
         if (!exists(resolved)) {
-            request.error = ERROR_ACCESS_DENIED;
+            request.error = refusal(resolved, disposition);
             return request;
         }
         request.disposition = OPEN_EXISTING;
@@ -480,6 +504,10 @@ BOOL WINAPI CopyFileA(LPCSTR existing, LPCSTR destination, BOOL fail_if_exists) 
 
 HRESULT WINAPI CopyFile2(PCWSTR existing, PCWSTR destination,
                          COPYFILE2_EXTENDED_PARAMETERS* parameters) {
+    // As in Win32, bad parameters fail before either path is looked at.
+    if (!detail::valid_copy_file2_parameters(parameters)) {
+        return E_INVALIDARG;
+    }
     const CopyEnds ends =
         copy_ends(existing, destination, parameters != nullptr ? parameters->dwCopyFlags : 0);
     if (ends.error != 0) {
@@ -531,17 +559,85 @@ BOOL WINAPI ReplaceFileA(LPCSTR replaced, LPCSTR replacement, LPCSTR backup, DWO
 
 namespace detail {
 
+bool valid_copy_file2_parameters(const COPYFILE2_EXTENDED_PARAMETERS* parameters) {
+    // Windows 11 takes every dwCopyFlags bit, defined or not, but this one, the undefined bit
+    // between the two sparse-copy flags (measured).
+    constexpr DWORD kRefusedCopyFlag = 0x40000000;
+    constexpr DWORD kCopyFlagsV2 =
+        COPY_FILE2_V2_DONT_COPY_JUNCTIONS | COPY_FILE2_V2_DISABLE_BLOCK_CLONING;
+    static_assert(sizeof(COPYFILE2_EXTENDED_PARAMETERS) == 32);
+    static_assert(sizeof(COPYFILE2_EXTENDED_PARAMETERS_V2) == 112);
+
+    if (parameters == nullptr) {
+        return true;
+    }
+    if (parameters->dwSize != sizeof(COPYFILE2_EXTENDED_PARAMETERS) &&
+        parameters->dwSize != sizeof(COPYFILE2_EXTENDED_PARAMETERS_V2)) {
+        return false;
+    }
+    if ((parameters->dwCopyFlags & kRefusedCopyFlag) != 0) {
+        return false;
+    }
+    if (parameters->dwSize == sizeof(COPYFILE2_EXTENDED_PARAMETERS)) {
+        return true;
+    }
+    // The second version's own flags, I/O size and rate (zero for the default), and reserved
+    // fields, which must be zero.
+    const auto* second = reinterpret_cast<const COPYFILE2_EXTENDED_PARAMETERS_V2*>(parameters);
+    const ULONG size = second->ioDesiredSize;
+    const bool size_ok =
+        size == 0 || (size >= COPYFILE2_IO_CYCLE_SIZE_MIN && size <= COPYFILE2_IO_CYCLE_SIZE_MAX);
+    const bool rate_ok =
+        second->ioDesiredRate == 0 || second->ioDesiredRate >= COPYFILE2_IO_RATE_MIN;
+    const bool reserved_zero =
+        std::ranges::all_of(second->reserved, [](const void* entry) { return entry == nullptr; });
+    return (second->dwCopyFlagsV2 & ~kCopyFlagsV2) == 0 && size_ok && rate_ok && reserved_zero;
+}
+
 HRESULT copy_file2_fallback(PCWSTR existing, PCWSTR destination,
                             const COPYFILE2_EXTENDED_PARAMETERS* parameters) {
-    // The flags CopyFileExW knows; the rest are hints or privilege requests CopyFile2 alone has.
+    // The flags CopyFileExW knows. Of the rest, those that change what is copied matter only for
+    // a directory or a reparse point, which CopyFileExW won't copy as such; the copy is refused
+    // then, below. The others are hints and privilege requests, and
+    // COPY_FILE_SKIP_ALTERNATE_STREAMS, which no guest can tell from a copy of the streams: it
+    // can't name a stream.
     constexpr DWORD kCopyFileExFlags =
         COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_RESTARTABLE | COPY_FILE_OPEN_SOURCE_FOR_WRITE |
         COPY_FILE_ALLOW_DECRYPTED_DESTINATION | COPY_FILE_COPY_SYMLINK | COPY_FILE_NO_BUFFERING;
     DWORD flags = 0;
     BOOL* cancel = nullptr;
+    LPPROGRESS_ROUTINE progress = nullptr;
+    void* context = nullptr;
     if (parameters != nullptr) {
         flags = parameters->dwCopyFlags & kCopyFileExFlags;
         cancel = parameters->pfCancel;
+
+        const DWORD attributes = ::GetFileAttributesW(existing);
+        if (attributes != INVALID_FILE_ATTRIBUTES) {
+            const bool directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+                                   (parameters->dwCopyFlags & COPY_FILE_DIRECTORY) != 0;
+            const bool reparse_point =
+                (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+                (parameters->dwCopyFlags & COPY_FILE_OPEN_AND_COPY_REPARSE_POINT) != 0;
+            if (directory || reparse_point) {
+                static std::once_flag reported;
+                std::call_once(reported, [] {
+                    LOG_WARN(imports, "CopyFile2: the host has none, and CopyFileExW can't copy "
+                                      "a directory or a reparse point as such, so the copy fails "
+                                      "with ERROR_NOT_SUPPORTED (reported once)");
+                });
+                return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+            }
+        }
+
+        // The second version may name an old-style progress routine, which CopyFileExW calls as
+        // it is, with the callback context (measured: Windows passes the context to it too).
+        if (parameters->dwSize == sizeof(COPYFILE2_EXTENDED_PARAMETERS_V2)) {
+            const auto* second =
+                reinterpret_cast<const COPYFILE2_EXTENDED_PARAMETERS_V2*>(parameters);
+            progress = second->pProgressRoutineOld;
+            context = second->pvCallbackContext;
+        }
         if (parameters->pProgressRoutine != nullptr) {
             static std::once_flag reported;
             std::call_once(reported, [] {
@@ -551,7 +647,7 @@ HRESULT copy_file2_fallback(PCWSTR existing, PCWSTR destination,
             });
         }
     }
-    if (::CopyFileExW(existing, destination, nullptr, nullptr, cancel, flags) == FALSE) {
+    if (::CopyFileExW(existing, destination, progress, context, cancel, flags) == FALSE) {
         return HRESULT_FROM_WIN32(GetLastError());
     }
     return S_OK;

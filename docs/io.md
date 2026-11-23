@@ -53,7 +53,9 @@ here.
 
 **Writes to a read-only mount** fail with `ERROR_ACCESS_DENIED`, as on the console. There is no
 overlay that copies files out of the install: the console's package drive can't be written
-either, so the game doesn't try.
+either, so the game doesn't try. An error Win32 checks for first still comes first: `CreateFile`
+with `TRUNCATE_EXISTING` but without `GENERIC_WRITE` is `ERROR_INVALID_PARAMETER`, and an open
+that needs a missing directory or file gets the not-found error, as on any read-only volume.
 
 ## Path rules
 
