@@ -64,7 +64,7 @@ void XTaskQueueCloseHandle(XTaskQueueHandle queue);
 // port's pending termination also runs here once nothing else is waiting.
 bool XTaskQueueDispatch(XTaskQueueHandle queue, XTaskQueuePort port, uint32_t timeout_ms);
 // Whether the port has nothing waiting, nothing delayed, and nothing running. Private to the
-// Game Runtime; kept for its vtable slot.
+// Game Runtime in libHttpClient's design; no vtable slot reaches it (docs/gdk.md, "Slots").
 bool XTaskQueueIsEmpty(XTaskQueueHandle queue, XTaskQueuePort port);
 
 // Terminates the queue: later submits fail with E_ABORT, callbacks still waiting (delayed ones

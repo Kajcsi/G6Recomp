@@ -20,9 +20,9 @@ be checked as each service is built:
 
 * Some GDK libraries reach the Game Runtime without importing it: they load `xgameruntime.dll`
   by name, look up `QueryApiImpl`, and call services by interface ID and vtable slot.
-  **Checked here:** `XCurl.dll` and libHttpClient contain those names. Our loader fails
-  `LoadLibrary` for an unknown DLL, so `runtime/gdk` provides that DLL as a guest-visible
-  module.
+  **Checked here** on the console's libHttpClient and XCurl, slot by slot. **Taken:**
+  `runtime/gdk` provides that DLL, and the loader gives the guest a pseudo handle for it
+  ([gdk.md](gdk.md), "The Game Runtime DLL").
 * 33 functions in HRESULT-returning families return something else, such as
   `XTaskQueueDispatch`, `XUserCloseHandle`, and `XStoreIsLicenseValid`. Their stubs return
   that type's failure value, not `E_NOTIMPL`.
@@ -42,7 +42,7 @@ be checked as each service is built:
 * More functions whose real return type isn't HRESULT (Leonida): `XErrorSetOptions` and
   `XSystemAllowFullDownloadBandwidth` return nothing, `XSystemIsHandleValid` returns `bool`,
   and `XErrorReport` does return HRESULT. `XThreadingImpl` slot 8 fails rather than returning
-  `S_OK`.
+  `S_OK`. **Taken** for the XError functions and slot 8, which fails with `E_NOTIMPL` here.
 * `XGameSave` calls on a closed handle return `E_GS_HANDLE_EXPIRED` (0x8083000D)
   (xbox-emulator).
 * `XStore` sizes, unverified (Leonida): `STORE_SKU_ID_SIZE` 18 and `SKU_ID_SIZE` 5, which make
@@ -77,8 +77,8 @@ Notes for `runtime/kernel`:
 
 So far there is the loader's own HLE, and `runtime/imports` with the default import policy
 (`default_game_policy()`), xmem, COM and WinRT activation, and the path functions on
-`runtime/io`. `runtime/gdk` has XTaskQueue and XAsync, which the guest reaches once the Game
-Runtime's interfaces are bound.
+`runtime/io`. `runtime/gdk` has XTaskQueue, XAsync, XError, and XThread, which the guest
+reaches through our `xgameruntime.dll`.
 The rows below cover what the side DLLs import ([side-dlls.md](side-dlls.md)). The networking
 libraries are never mapped: the game's imports from them bind to offline implementations. The
 full list comes from the main executable: `x64recomp imports <exe>` gives the starting list.
@@ -263,26 +263,43 @@ command line is never read or changed.
 | `_get_pgmptr`, `_get_wpgmptr` | implemented | `EINVAL` through the handler before the configure of their width, or for a null out pointer. |
 | `_get_narrow_winmain_command_line`, `_get_wide_winmain_command_line` | implemented | The rest of `_acmdln` or `_wcmdln` after the program name and the blanks after it; an empty string for a null line. |
 
-## runtime/gdk (XTaskQueue and XAsync)
+## runtime/gdk
 
-The base the other Game Runtime services run on ([gdk.md](gdk.md)). Signatures and layouts are
-the public GDK's; behavior follows libHttpClient's (MIT), with no code taken. A title reaches
-them through `QueryApiImpl` and the `XThreadingImpl` vtable, not through named imports, so
-these rows give the public names; the slots come with that binding. Tested by `test_gdk`.
+The Game Runtime ([gdk.md](gdk.md)). Signatures and layouts are the public GDK's; XTaskQueue
+and XAsync follow libHttpClient's behavior (MIT), with no code taken. A title reaches these
+functions through `xgameruntime.dll`'s `QueryApiImpl` and the service vtables, not through named
+imports, so the rows give the public names and gdk.md, "Slots", gives each slot. Tested by
+`test_gdk`, and the policy's binding by `test_imports`.
+
+**xgameruntime.dll**, bound by `default_game_policy()`. Every other export is `E_NOTIMPL`, and
+`GetProcAddress` finds nothing for it.
 
 | Function | Status | Notes |
 |---|---|---|
+| `QueryApiImpl` | implemented | Static objects for the threading, error, and feature services. `REGDB_E_CLASSNOTREG` for any other service, logged once per class; `E_NOINTERFACE` for another interface. |
+| `InitializeApiImpl`, `InitializeApiImplEx`, `InitializeApiImplEx2` | implemented | Log their versions and flags once and succeed. |
+| `UninitializeApiImpl` | implemented | Succeeds. |
+| `XErrorReport` | implemented | Also exported by name. See the XError rows. |
+
+**Services.**
+
+| Function | Status | Notes |
+|---|---|---|
+| `XGameRuntimeIsFeatureAvailable` | implemented | True for every feature, as on the console; each feature number is logged once. |
+| `XErrorReport`, `XErrorSetCallback`, `XErrorSetOptions` | implemented | Every report reaches our log, then the callback, then the options. `FailFastOnError` is logged, not acted on. Error slot 3 is unknown: logged once and ignored. |
+| `XThreadSetTimeSensitive`, `XThreadIsTimeSensitive`, `XThreadAssertNotTimeSensitive` | implemented | A per-thread mark; the assert logs once per marked thread and never stops the call. |
+| Threading slots 8 and 28 | stubbed | Unknown functions: logged once with the caller, `E_NOTIMPL`. |
 | `XTaskQueueCreate`, `XTaskQueueCreateComposite` | implemented | Manual, ThreadPool, SerializedThreadPool, and Immediate ports on the host thread pool. A composite queue shares other queues' ports and terminates only its own callbacks. |
 | `XTaskQueueGetPort`, `XTaskQueueDuplicateHandle`, `XTaskQueueCloseHandle` | implemented | Counted handles; a handle that isn't a live queue gives `E_GAMERUNTIME_INVALID_HANDLE` (0x8924010C). |
 | `XTaskQueueDispatch` | implemented | Any port, not only Manual ones. Returns `bool`, not HRESULT. |
-| `XTaskQueueIsEmpty` | implemented | Private to the Game Runtime. Covers the whole port, which other queues may share. |
+| `XTaskQueueIsEmpty` | implemented | Private to the Game Runtime, and no slot reaches it (slot 28 is something else). Covers the whole port, which other queues may share. |
 | `XTaskQueueTerminate` | implemented | Waiting callbacks, delayed ones, and waiters run once more as canceled; work port, then completion port, then the callback. |
 | `XTaskQueueSubmitCallback`, `XTaskQueueSubmitDelayedCallback` | implemented | `E_ABORT` once the queue is terminating. Delayed callbacks run in due order. |
 | `XTaskQueueRegisterWaiter`, `XTaskQueueUnregisterWaiter` | implemented | Through a duplicate of the caller's handle, re-armed after each callback. |
 | `XTaskQueueRegisterMonitor`, `XTaskQueueUnregisterMonitor` | implemented | Unregister waits out calls under way on other threads. |
 | `XTaskQueueSuspendTermination`, `XTaskQueueResumeTermination` | implemented | |
 | `XTaskQueueGetCurrentProcessTaskQueue`, `XTaskQueueSetCurrentProcessTaskQueue` | implemented | Two ThreadPool ports by default, made on first use; null leaves no process queue. |
-| `XAsyncBegin`, `XAsyncBeginAlloc` | implemented | `E_NO_TASK_QUEUE` (0x800701AB) without a queue, `E_ABORT` on a terminating one. A failing begin step ends the call while `XAsyncBegin` returns `S_OK`. `XAsyncBeginAlloc` is private to the Game Runtime. |
+| `XAsyncBegin`, `XAsyncBeginAlloc` | implemented | `E_NO_TASK_QUEUE` (0x800701AB) without a queue, `E_ABORT` on a terminating one. A failing begin step ends the call while `XAsyncBegin` returns `S_OK`. `XAsyncBeginAlloc` is private to the Game Runtime, and no known slot reaches it. |
 | `XAsyncSchedule`, `XAsyncComplete` | implemented | A second schedule before the first has run, and a work step that succeeds without completing, give `E_UNEXPECTED`. |
 | `XAsyncRun` | implemented | |
 | `XAsyncGetStatus`, `XAsyncGetResultSize`, `XAsyncGetResult` | implemented | Checks in libHttpClient's order ([gdk.md](gdk.md), "Status and results"). |

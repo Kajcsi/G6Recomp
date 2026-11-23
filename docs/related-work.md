@@ -711,3 +711,17 @@ Public material; listed here so it can be found again.
   parts would be facts only, as with xcl.
 * [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) (University of
   Illinois/NCSA): compiles HLSL to DXIL. xbox-emulator's shader backend uses it.
+* [xgameruntime-rs](https://github.com/minecraft-linux/xgameruntime-rs) (MIT, reviewed at
+  `c523673a`): a Rust Game Runtime for running GDK titles on Linux. Its threading vtable order
+  matches the slots we checked on the console's libraries, except slot 28, which it calls
+  `XTaskQueueIsEmpty` while the thunk there passes no arguments ([gdk.md](gdk.md), "Slots"). Its
+  entry-point signatures (`QueryApiImpl`, the three initializers, `UninitializeApiImpl`) agree
+  with the start-up code we read, except that the code passes 64-bit packed versions to the two
+  newer initializers, where it takes 32-bit ones. Facts only so far; its sign-in and token code
+  is never taken (hard rule 5).
+* [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime) (LGPL-2.1) and
+  [xodus-gaming/xgameruntime-docs](https://github.com/xodus-gaming/xgameruntime-docs) (GPL-3.0):
+  the Wine IDL and the class and slot documentation that hle-status.md compares. Neither is
+  copied; GPL-3.0-only text would need asking first.
+* JPTuba9/xlaunch-vi: a compatibility layer for this game, published 2026-11-23 with no
+  licence, so nothing is taken from it.

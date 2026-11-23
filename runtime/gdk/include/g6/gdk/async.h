@@ -70,7 +70,7 @@ HRESULT XAsyncBegin(XAsyncBlock* async, void* context, const void* identity,
                     const char* identity_name, XAsyncProvider* provider);
 // XAsyncBegin with `context_size` zeroed bytes as the provider's context, owned by the call, and
 // the first `parameter_block_size` of them copied from `parameter_block`. Private to the Game
-// Runtime; kept for its vtable slot.
+// Runtime in libHttpClient's design; no known vtable slot reaches it yet (docs/gdk.md, "Slots").
 HRESULT XAsyncBeginAlloc(XAsyncBlock* async, const void* identity, const char* identity_name,
                          XAsyncProvider* provider, size_t context_size, size_t parameter_block_size,
                          void* parameter_block);

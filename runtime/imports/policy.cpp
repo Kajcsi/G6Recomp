@@ -15,6 +15,8 @@
 #include <windows.h>
 
 #include "combase/class_activation.h"
+#include "g6/gdk/error.h"
+#include "g6/gdk/runtime.h"
 #include "g6/imports/command_line.h"
 #include "g6/imports/crt_exit.h"
 #include "g6/imports/crt_paths.h"
@@ -300,12 +302,31 @@ void add_com(ImportRegistry& imports) {
 
 // ---- Console DLLs ----
 
+// The Game Runtime is runtime/gdk's, never the host's (hard rule 5): the entry points
+// xgameruntime.lib looks up (docs/gdk.md, "The Game Runtime DLL"). Every other export is
+// E_NOTIMPL, and GetProcAddress finds nothing for it, as for RestartApiImpl and RundownApiImpl,
+// which only the Gaming Services path in XCurl looks up.
+void add_game_runtime(ImportRegistry& imports) {
+    constexpr std::string_view kRuntime = "xgameruntime.dll";
+    imports.stub_dll(kRuntime, StubResult::hresult());
+    const auto hle = [&](const char* name, const void* function) {
+        imports.hle(kRuntime, Symbol::by_name(name), function);
+    };
+    hle("QueryApiImpl", reinterpret_cast<const void*>(&gdk::QueryApiImpl));
+    hle("InitializeApiImpl", reinterpret_cast<const void*>(&gdk::InitializeApiImpl));
+    hle("InitializeApiImplEx", reinterpret_cast<const void*>(&gdk::InitializeApiImplEx));
+    hle("InitializeApiImplEx2", reinterpret_cast<const void*>(&gdk::InitializeApiImplEx2));
+    hle("UninitializeApiImpl", reinterpret_cast<const void*>(&gdk::UninitializeApiImpl));
+    hle("XErrorReport", reinterpret_cast<const void*>(&gdk::XErrorReport));
+}
+
 void add_console(ImportRegistry& imports) {
     // Bink imports XAudio2Create by ordinal 1.
     imports.forward("xaudio2_9.dll", Symbol::by_ordinal(1), "xaudio2_9.dll", "XAudio2Create");
     forward_each(imports, "xaudio2_9.dll", {"XAudio2Create"});
 
     xmem::register_xmem(imports);
+    add_game_runtime(imports);
 
     // D3D12.X, until runtime/gpu wraps it.
     imports.stub_dll("d3d12_xs.dll", StubResult::hresult());

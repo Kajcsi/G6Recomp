@@ -4,12 +4,11 @@ The Xbox Game Runtime APIs: `runtime/gdk` implements them against the public GDK
 a guest built against the GDK gets the types, layouts, and error codes it expects. Status per
 function is in [hle-status.md](hle-status.md), "runtime/gdk".
 
-**Status: XTaskQueue and XAsync implemented and tested (2026-11-23).** `test_gdk` checks both
-on the host. The guest doesn't reach them yet: a title reaches the Game Runtime through
-`xgameruntime.dll`'s `QueryApiImpl` and interface vtables ([hle-status.md](hle-status.md), the
-notes for `runtime/gdk`), and that binding is the next step. The default policy never forwards
-`xgameruntime.dll` to the host's copy, which talks to Xbox services (hard rule 5); `test_imports`
-checks that.
+**Status: XTaskQueue, XAsync, XError, and XThread implemented and bound (2026-11-23).** The
+guest reaches them the way a title does on the console: through our `xgameruntime.dll`, its
+`QueryApiImpl`, and the interface vtables ("The Game Runtime DLL" below). The default policy never
+forwards `xgameruntime.dll` to the host's copy, which talks to Xbox services (hard rule 5);
+`test_imports` checks that, and `test_gdk` calls every service through its slots.
 
 ## Why our own
 
@@ -35,6 +34,88 @@ Error codes come from the public `winerror.h` and `XGameErr.h`: `E_GAMERUNTIME_I
 (0x8924010C) for a bad queue handle, `E_NO_TASK_QUEUE` (0x800701AB, `ERROR_NO_TASK_QUEUE`) when
 an async call has no queue to use, and `ERROR_NOT_SUPPORTED` (0x80070032) for a result that
 can't be fetched.
+
+## The Game Runtime DLL
+
+A title doesn't import Game Runtime functions by name. The GDK's `xgameruntime.lib` is linked
+into each module that uses the runtime, and its code loads `xgameruntime.dll` at run time and
+asks it for one object per service. We checked this code in the console's libHttpClient and
+XCurl. A GDK title links the same library into its executable.
+
+**Start-up.** The first lookup starts the runtime, under a lock:
+
+1. If `xgameruntime.dll` sits next to the executable, the library loads it with
+   `LoadLibraryExW` and flags `0xA00` (application directory and System32). Otherwise it uses
+   `0x800` (System32 only). The game's folder has no such file, so the load is by name with
+   `0x800`, and our loader answers with a pseudo handle because the policy provides the DLL.
+2. It looks up `QueryApiImpl`, `InitializeApiImpl`, `InitializeApiImplEx`,
+   `InitializeApiImplEx2`, `XErrorReport`, and `UninitializeApiImpl`. It fails with 0x89240101
+   unless `QueryApiImpl`, at least one initializer, `XErrorReport`, and `UninitializeApiImpl`
+   are all there. A failed load gives the same code.
+3. It calls the newest initializer there is:
+   * `InitializeApiImplEx2` with two packed versions, a flags byte, and an options pointer.
+   * `InitializeApiImplEx` with the same first three arguments.
+   * `InitializeApiImpl` with the two 32-bit halves of the first version.
+
+   In this build's libraries the versions read 25398.10002 and 26100.6194, which look like the
+   console OS and Windows builds the GDK targets, and the library sets bit 1 of the flags. A
+   negative result fails the lookup. Other errors go to `XErrorReport`, with 0x89240100 or
+   0x8924010A.
+
+**Lookups.** Each thunk passes one GUID as both the class ID and the interface ID to a wrapper,
+which starts the runtime if needed and then calls `QueryApiImpl(class, interface, &object)`.
+The thunk then calls one vtable slot of the object and releases it (slot 2). A wrapper that
+gets `REGDB_E_CLASSNOTREG` (0x80040154) turns it into 0x89240107 and reports it through
+`XErrorReport`.
+
+**Ours.** `runtime/gdk/src/runtime.cpp` provides the six entry points, and
+`default_game_policy()` binds them as HLE for `xgameruntime.dll`:
+
+* `QueryApiImpl` returns static objects, so the reference counts never reach zero. It gives
+  `E_POINTER` for a null argument and `E_NOINTERFACE` for an interface a service doesn't have.
+  For a service we don't provide yet it gives `REGDB_E_CLASSNOTREG`, which the guest reports,
+  and it logs each missing class once.
+* The initializers log their arguments once and succeed. `UninitializeApiImpl` succeeds.
+* Every other export is `E_NOTIMPL` for an import, and `GetProcAddress` finds nothing for it.
+  `RestartApiImpl`, `RundownApiImpl`, and `GetApiVersionImpl` are such names: XCurl looks them
+  up only in `gameplatformservices.dll`, its Gaming Services path, which stays missing offline.
+
+**Slots.** Each service object is COM-style: slots 0 to 2 are `IUnknown`'s, and every later
+slot takes the object first, then the public function's arguments. We checked each slot on the
+console's libHttpClient (27 threading thunks) and XCurl (8): how many arguments the thunk
+passes, and whether it uses the result and how wide it is.
+
+| Slot | Threading (073b7dcb-1fcf-4030-94be-e3c9eb623428) |
+|---|---|
+| 3 to 7 | `XAsyncGetStatus`, `XAsyncGetResultSize`, `XAsyncCancel`, `XAsyncRun`, `XAsyncBegin` |
+| 8 | Unknown: no thunk calls it. Fails with `E_NOTIMPL` |
+| 9 to 11 | `XAsyncSchedule`, `XAsyncComplete`, `XAsyncGetResult` |
+| 12 to 17 | `XTaskQueueCreate`, `XTaskQueueCreateComposite`, `XTaskQueueGetPort`, `XTaskQueueDuplicateHandle`, `XTaskQueueDispatch`, `XTaskQueueCloseHandle` |
+| 18 to 22 | `XTaskQueueSubmitCallback`, `XTaskQueueSubmitDelayedCallback`, `XTaskQueueRegisterWaiter`, `XTaskQueueUnregisterWaiter`, `XTaskQueueTerminate` |
+| 23 to 26 | `XTaskQueueRegisterMonitor`, `XTaskQueueUnregisterMonitor`, `XTaskQueueGetCurrentProcessTaskQueue`, `XTaskQueueSetCurrentProcessTaskQueue` |
+| 27 | `XThreadSetTimeSensitive` |
+| 28 | Unknown: the thunk passes no arguments and returns a 32-bit value. Fails with `E_NOTIMPL` |
+| 29, 30 | `XThreadAssertNotTimeSensitive`, `XThreadIsTimeSensitive` |
+
+| Slot | Error (8ca467f7-22e8-4096-8456-bb8aa13f79d8) |
+|---|---|
+| 3 | Unknown: two arguments, no result. Logged once and ignored |
+| 4 | `XErrorSetCallback` |
+| 5 | `XErrorSetOptions` |
+
+| Slot | Feature (8836fe87-edb9-4fe3-8dad-05f0d2cd5b40) |
+|---|---|
+| 3 | `XGameRuntimeIsFeatureAvailable`: one argument, returns `bool` |
+
+The threading order matches xgameruntime-rs (MIT,
+[related-work.md](related-work.md)), with one exception. xgameruntime-rs puts a private
+`XTaskQueueIsEmpty` at slot 28, but the thunk there passes no queue and no port, so it can't be
+that function. `XTaskQueueIsEmpty` and `XAsyncBeginAlloc` stay in `runtime/gdk` for our own use
+until a slot is shown to reach them. Leonida reports that slot 8 fails on the PC runtime.
+
+`XGameRuntimeIsFeatureAvailable` answers true for every feature, as the console does, so the
+game takes the paths it took there. A service we don't provide yet then fails at `QueryApiImpl`,
+where the log names it. Each feature number asked for is logged once.
 
 ## XTaskQueue
 
@@ -161,6 +242,31 @@ attached; the provider works on a copy of the block that the call owns. When the
 final status is written back into the caller's block, so the caller may free its block as soon
 as the completion routine has run, while the provider's steps still hold the copy.
 
+## XError
+
+`XErrorReport(result, message)` is how libraries report an error to the runtime, and
+`XErrorSetCallback` and `XErrorSetOptions` let the title decide what happens next.
+
+* Every report goes to our log first, whatever the title asked for.
+* Then the title's callback runs, outside our lock, so it may report again or change the
+  callback. A callback that returns false ends the handling there.
+* Then the options for the current case (debugger attached or not) apply:
+  `OutputDebugStringOnError` writes the message, and `DebugBreakOnError` breaks into an attached
+  debugger. `FailFastOnError` is logged as an error but not acted on, so that during bring-up a
+  reported error can't end the game before the log shows why.
+* Both option sets start as `None`. `XErrorReport` returns `S_OK`.
+
+Our own services don't report their failures through XError yet. The console's runtime does, so
+a title that relies on its callback for diagnostics sees less here.
+
+## XThread
+
+A title marks the threads that must never block, such as its render thread, with
+`XThreadSetTimeSensitive`, and `XThreadIsTimeSensitive` reads the mark back. The mark is per
+thread. `XThreadAssertNotTimeSensitive` is what the runtime's blocking functions call: on a
+marked thread it logs a warning, once per thread, and the call goes on. The guest reaches it
+through one thunk, so a caller address would only name the thunk.
+
 ## Tests
 
 `test_gdk` (nogame) covers:
@@ -172,3 +278,10 @@ as the completion routine has run, while the provider's steps still hold the cop
 * XAsync through `XAsyncRun` and through a provider, payload fetches and their checks
 * failing and immediate begin steps, scheduling rules, cancel, `XAsyncBeginAlloc`
 * calls on a terminating queue
+* `QueryApiImpl`'s answers, the services' `IUnknown` slots, and each service called through its
+  slots as a thunk calls it: queues and async calls, the time-sensitive mark per thread, the
+  unknown slots, XError's callback, and the feature query
+* the initializers
+
+`test_imports` checks that the default policy binds the six entry points to these functions and
+nothing else in `xgameruntime.dll`.

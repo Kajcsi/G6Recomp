@@ -7,9 +7,12 @@
 #include <optional>
 #include <roapi.h>
 #include <string>
+#include <utility>
 #include <windows.h>
 #include <winstring.h>
 
+#include "g6/gdk/error.h"
+#include "g6/gdk/runtime.h"
 #include "g6/imports/policy.h"
 #include "g6/imports/xmem.h"
 #include "g6test.h"
@@ -233,11 +236,33 @@ TEST_CASE("the Game Runtime is never the host's") {
     ImportRegistry policy = default_game_policy();
     CHECK(policy.dll_binding("xgameruntime.dll") != Binding::Forward);
     CHECK(!policy.host_provides("xgameruntime.dll"));
-    for (const char* name :
-         {"QueryApiImpl", "XGameRuntimeInitialize", "XTaskQueueCreate", "XAsyncRun"}) {
+    CHECK(policy.knows("xgameruntime.dll"));
+
+    // The entry points xgameruntime.lib looks up are runtime/gdk's (docs/gdk.md, "The Game
+    // Runtime DLL").
+    const std::pair<const char*, const void*> entry_points[] = {
+        {"QueryApiImpl", reinterpret_cast<const void*>(&g6::gdk::QueryApiImpl)},
+        {"InitializeApiImpl", reinterpret_cast<const void*>(&g6::gdk::InitializeApiImpl)},
+        {"InitializeApiImplEx", reinterpret_cast<const void*>(&g6::gdk::InitializeApiImplEx)},
+        {"InitializeApiImplEx2", reinterpret_cast<const void*>(&g6::gdk::InitializeApiImplEx2)},
+        {"UninitializeApiImpl", reinterpret_cast<const void*>(&g6::gdk::UninitializeApiImpl)},
+        {"XErrorReport", reinterpret_cast<const void*>(&g6::gdk::XErrorReport)},
+    };
+    for (const auto& [name, function] : entry_points) {
         INFO(name);
-        CHECK(policy.resolve("xgameruntime.dll", Symbol::by_name(name)).binding !=
-              Binding::Forward);
+        const Resolution resolution = policy.resolve("xgameruntime.dll", Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Hle);
+        CHECK(resolution.address == function);
+    }
+
+    // Nothing else: GetProcAddress finds no address, and an import gets E_NOTIMPL.
+    for (const char* name : {"XGameRuntimeInitialize", "XTaskQueueCreate", "XAsyncRun",
+                             "RestartApiImpl", "RundownApiImpl", "GetApiVersionImpl"}) {
+        INFO(name);
+        const Resolution resolution = policy.resolve("xgameruntime.dll", Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Stub);
+        CHECK(resolution.address == nullptr);
+        CHECK_EQ(resolution.stub.value, kNotImplemented);
     }
 }
 

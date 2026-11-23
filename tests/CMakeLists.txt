@@ -337,10 +337,10 @@ g6_add_test(test_io LABEL nogame
 g6_add_test(test_imports LABEL nogame
     SOURCES imports/test_command_line.cpp imports/test_default_policy.cpp imports/test_files.cpp
             imports/test_registry.cpp imports/test_xmem.cpp
-    LIBS g6imports runtimeobject)
+    LIBS g6imports g6gdk runtimeobject)
 
 g6_add_test(test_gdk LABEL nogame
-    SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp
+    SOURCES gdk/test_task_queue.cpp gdk/test_async.cpp gdk/test_game_runtime.cpp
     LIBS g6gdk)
 
 # The guest executable for test_crt_exit: original, and release /MD like the game's executable,
