@@ -366,6 +366,24 @@ TEST_CASE("directories and files are created, moved, and removed on the temp dri
           HRESULT_FROM_WIN32(ERROR_FILE_EXISTS));
     fs::remove(drives.temp() / "fallback.txt");
 
+    // A copy cancelled before it starts writes nothing, as on Windows (Wine copies anyway).
+    BOOL cancel = TRUE;
+    COPYFILE2_EXTENDED_PARAMETERS cancelled{};
+    cancelled.dwSize = sizeof(cancelled);
+    cancelled.pfCancel = &cancel;
+    CHECK(k::CopyFile2(L"G:\\data.txt", L"T:\\cancelled.txt", &cancelled) ==
+          HRESULT_FROM_WIN32(ERROR_REQUEST_ABORTED));
+    error = last_error_of([&cancel] {
+        CHECK(k::CopyFileExW(L"G:\\data.txt", L"T:\\cancelled.txt", nullptr, nullptr, &cancel, 0) ==
+              FALSE);
+    });
+    CHECK_EQ(error, DWORD{ERROR_REQUEST_ABORTED});
+    CHECK(!fs::exists(drives.temp() / "cancelled.txt"));
+    cancel = FALSE;
+    CHECK(k::CopyFile2(L"G:\\data.txt", L"T:\\cancelled.txt", &cancelled) == S_OK);
+    CHECK(fs::exists(drives.temp() / "cancelled.txt"));
+    fs::remove(drives.temp() / "cancelled.txt");
+
     CHECK(k::MoveFileExW(L"T:\\copy.txt", L"T:\\moved.txt", 0) != FALSE);
     CHECK(fs::exists(drives.temp() / "moved.txt"));
     error = last_error_of([] { CHECK(k::MoveFileExW(L"G:\\data.txt", L"T:\\x.txt", 0) == FALSE); });

@@ -61,7 +61,10 @@ BOOL WINAPI MoveFileW(LPCWSTR existing, LPCWSTR destination);
 BOOL WINAPI MoveFileA(LPCSTR existing, LPCSTR destination);
 
 // Copies read the source and write the destination; COPY_FILE_OPEN_SOURCE_FOR_WRITE needs a
-// writable source, and COPY_FILE_COPY_SYMLINK fails with ERROR_INVALID_PARAMETER.
+// writable source, and COPY_FILE_COPY_SYMLINK fails with ERROR_INVALID_PARAMETER. A cancel flag
+// that is already set fails the copy with ERROR_REQUEST_ABORTED and writes nothing, as on
+// Windows; Wine's CopyFile2 and CopyFileExW copy anyway (Leonida found this), so the HLE checks
+// the flag itself.
 BOOL WINAPI CopyFileExW(LPCWSTR existing, LPCWSTR destination, LPPROGRESS_ROUTINE progress,
                         LPVOID data, LPBOOL cancel, DWORD flags);
 BOOL WINAPI CopyFileExA(LPCSTR existing, LPCSTR destination, LPPROGRESS_ROUTINE progress,
@@ -82,6 +85,9 @@ BOOL WINAPI ReplaceFileA(LPCSTR replaced, LPCSTR replacement, LPCSTR backup, DWO
                          LPVOID exclude, LPVOID reserved);
 
 namespace detail {
+// Whether a cancel flag is given and set.
+bool cancelled(const BOOL* cancel);
+
 // Whether Win32's CopyFile2 takes these extended parameters (measured on Windows 11): none, or
 // the first or second version of the structure by its exact size; no dwCopyFlags bit 0x40000000;
 // and in the second version, only the defined dwCopyFlagsV2 bits, an I/O size of zero or within

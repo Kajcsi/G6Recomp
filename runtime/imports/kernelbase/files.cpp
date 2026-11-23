@@ -480,6 +480,10 @@ BOOL WINAPI CopyFileExW(LPCWSTR existing, LPCWSTR destination, LPPROGRESS_ROUTIN
     if (ends.error != 0) {
         return FALSE;
     }
+    if (detail::cancelled(cancel)) {
+        SetLastError(ERROR_REQUEST_ABORTED);
+        return FALSE;
+    }
     return ::CopyFileExW(ends.from.host.c_str(), ends.to.host.c_str(), progress, data, cancel,
                          flags);
 }
@@ -512,6 +516,9 @@ HRESULT WINAPI CopyFile2(PCWSTR existing, PCWSTR destination,
         copy_ends(existing, destination, parameters != nullptr ? parameters->dwCopyFlags : 0);
     if (ends.error != 0) {
         return HRESULT_FROM_WIN32(ends.error);
+    }
+    if (parameters != nullptr && detail::cancelled(parameters->pfCancel)) {
+        return HRESULT_FROM_WIN32(ERROR_REQUEST_ABORTED);
     }
     if (CopyFile2Function host = host_copy_file2()) {
         return host(ends.from.host.c_str(), ends.to.host.c_str(), parameters);
@@ -592,6 +599,10 @@ bool valid_copy_file2_parameters(const COPYFILE2_EXTENDED_PARAMETERS* parameters
     const bool reserved_zero =
         std::ranges::all_of(second->reserved, [](const void* entry) { return entry == nullptr; });
     return (second->dwCopyFlagsV2 & ~kCopyFlagsV2) == 0 && size_ok && rate_ok && reserved_zero;
+}
+
+bool cancelled(const BOOL* cancel) {
+    return cancel != nullptr && *cancel != FALSE;
 }
 
 HRESULT copy_file2_fallback(PCWSTR existing, PCWSTR destination,

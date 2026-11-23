@@ -150,6 +150,19 @@ split (`g6::narrow_prefix`, tested by `test_text`).
   static TLS of their own moved the TLS array while the loader started
   ([execution-model.md](execution-model.md), "TLS and the TEB").
 
+## Under Proton
+
+**Reported** by Leonida (`6d55b156`), from tests under Wine:
+
+* **Cancelled copies.** When the cancel flag is already set, Windows' `CopyFile2` fails with
+  `ERROR_REQUEST_ABORTED` and writes nothing. Wine 11.20's `CopyFile2` and Wine 9's
+  `CopyFileExW` ignore the flag and copy anyway. Our `CopyFile2` checks the flag itself before
+  it copies, so the guest gets Windows' answer under Proton too.
+* **Renames that change only case.** Wine 11.20's `MoveFileW` to a name that differs only in
+  case reports success without renaming. Our HLE moves files through the host's
+  `MoveFileWithProgressW` with no special case for this, so expect the same under Proton (not
+  tested here).
+
 ## Tests
 
 * `test_io` (CI) covers the path rules: every form, `.` and `..` at the root, trailing dots,
