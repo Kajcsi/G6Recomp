@@ -7,9 +7,11 @@
 #include <cstddef>
 #include <cstring>
 #include <intrin.h>
+#include <memory>
 #include <utility>
 
 #include "command.h"
+#include "frame_clock.h"
 #include "g6/log.h"
 #include "proxy.h"
 
@@ -20,6 +22,7 @@ static_assert(kDeviceSlots == detail::kProxySlots);
 
 // The object the title holds. The forwarding thunks read the PC device at +8, and the upscaler
 // reads the byte at +0x18 before it copies a descriptor (docs/d3d12x.md, "Descriptor copies").
+// The rest is ours.
 struct DeviceProxy {
     const void* const* vtable;
     ID3D12Device* real;
@@ -27,6 +30,7 @@ struct DeviceProxy {
     uint32_t reserved;
     uint8_t copies_through_device; // nonzero: descriptor copies go through slot 24
     std::array<uint8_t, 7> padding;
+    std::unique_ptr<detail::FrameClock> clock;
 };
 static_assert(offsetof(DeviceProxy, real) == 8);
 static_assert(offsetof(DeviceProxy, copies_through_device) == 0x18);
@@ -314,6 +318,42 @@ HRESULT STDMETHODCALLTYPE create_command_list_x(DeviceProxy* self, const void* d
     return list_for(self, words[2], words[0], allocator, initial, riid, out);
 }
 
+// ---- The frame clock (docs/d3d12x.md, "The frame clock") ----
+
+// Slot 78, SetFrameIntervalX(output, length in microseconds, periodicity, flags). Run 10 passes
+// no output, 33,333 and 3. One clock serves every output.
+HRESULT STDMETHODCALLTYPE set_frame_interval(DeviceProxy* self, void* output, UINT length_us,
+                                             UINT periodicity, UINT flags) {
+    LOG_INFO(d3d12,
+             "device slot 78 (SetFrameIntervalX): output {}, {} us, periodicity {}, flags {:#x}",
+             output, length_us, periodicity, flags);
+    return self->clock->set_interval(length_us);
+}
+
+// Slot 79, ScheduleFrameEventX(type, offset in microseconds, handles, flags).
+HRESULT STDMETHODCALLTYPE schedule_frame_event(DeviceProxy* self, UINT type, UINT offset_us,
+                                               const void* handles, UINT flags) {
+    const HRESULT result = self->clock->schedule(type, offset_us, handles, flags);
+    LOG_DEBUG(d3d12,
+              "device slot 79 (ScheduleFrameEventX): type {}, offset {} us, handles {}, flags "
+              "{:#x}: {:#x}",
+              type, offset_us, handles, flags, static_cast<uint32_t>(result));
+    return result;
+}
+
+// Slot 80, WaitFrameEventX(type, timeout in milliseconds, handles, flags, token).
+HRESULT STDMETHODCALLTYPE wait_frame_event(DeviceProxy* self, UINT type, UINT timeout_ms,
+                                           const void* handles, UINT flags, uint64_t* token) {
+    static std::atomic<bool> seen{false};
+    if (!seen.exchange(true, std::memory_order_relaxed)) {
+        LOG_INFO(d3d12,
+                 "device slot 80 (WaitFrameEventX) first called from {}: type {}, timeout {} ms, "
+                 "handles {}, flags {:#x}, token {}",
+                 _ReturnAddress(), type, timeout_ms, handles, flags, static_cast<void*>(token));
+    }
+    return self->clock->wait(type, timeout_ms, handles, flags, token);
+}
+
 // ---- The table ----
 
 // The base ID3D12Device methods keep their PC slots on the console, 3 to 42 here. Slot 43 returns
@@ -333,6 +373,9 @@ const void* const* table() {
         table.set(26, reinterpret_cast<const void*>(&custom_heap_properties));
         table.set(48, reinterpret_cast<const void*>(&create_command_queue_x));
         table.set(73, reinterpret_cast<const void*>(&create_command_list_x));
+        table.set(78, reinterpret_cast<const void*>(&set_frame_interval));
+        table.set(79, reinterpret_cast<const void*>(&schedule_frame_event));
+        table.set(80, reinterpret_cast<const void*>(&wait_frame_event));
         return table.finish();
     }();
     return kTable;
@@ -352,6 +395,7 @@ HRESULT create_device_proxy(ID3D12Device* real, REFIID riid, void** out) {
     proxy->vtable = table();
     proxy->real = real;
     proxy->copies_through_device = 1;
+    proxy->clock = std::make_unique<detail::FrameClock>();
     live().insert(proxy);
     const HRESULT result = answer(proxy, riid, out);
     if (FAILED(result)) {

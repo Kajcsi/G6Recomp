@@ -5,6 +5,7 @@
 add_library(g6gpu STATIC
     command.cpp
     device.cpp
+    frame_clock.cpp
     memory_tracker.cpp
     proxy.cpp)
 target_include_directories(g6gpu PUBLIC include)

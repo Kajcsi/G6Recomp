@@ -513,3 +513,118 @@ TEST_CASE("a list recorded through the console's slots runs on the queue proxy")
     allocator->Release();
     queue->Release();
 }
+
+namespace {
+
+using SetFrameInterval = HRESULT (*)(void* device, void* output, UINT length_us, UINT periodicity,
+                                     UINT flags);
+using ScheduleFrameEvent = HRESULT (*)(void* device, UINT type, UINT offset_us, const void* handles,
+                                       UINT flags);
+using WaitFrameEvent = HRESULT (*)(void* device, UINT type, UINT timeout_ms, const void* handles,
+                                   UINT flags, uint64_t* token);
+
+constexpr HRESULT kStartedClock = 0x10000000;
+constexpr UINT kUnschedule = 1;
+constexpr UINT kTokenOnTimeout = 2;
+
+// The title's block of handles to signal with a frame event.
+struct HandleBlock {
+    uint32_t count;
+    uint32_t reserved;
+    const HANDLE* list;
+    int32_t* signaled;
+};
+
+// The frame clock's three slots on one device.
+struct Clock {
+    explicit Clock(const Fixture& fixture)
+        : device(fixture.proxy), set_interval(slot<SetFrameInterval>(table_of(device), 78)),
+          schedule(slot<ScheduleFrameEvent>(table_of(device), 79)),
+          wait(slot<WaitFrameEvent>(table_of(device), 80)) {}
+
+    void* device;
+    SetFrameInterval set_interval;
+    ScheduleFrameEvent schedule;
+    WaitFrameEvent wait;
+};
+
+double milliseconds_since(const LARGE_INTEGER& start) {
+    LARGE_INTEGER end{};
+    LARGE_INTEGER frequency{};
+    QueryPerformanceCounter(&end);
+    QueryPerformanceFrequency(&frequency);
+    return static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 /
+           static_cast<double>(frequency.QuadPart);
+}
+
+} // namespace
+
+TEST_CASE("the frame clock signals its events once a frame") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    const Clock clock(fixture);
+    uint64_t token = 0;
+
+    // Nothing to schedule or wait for before an interval is set.
+    CHECK_EQ(clock.schedule(clock.device, 0, 0, nullptr, 0), E_INVALIDARG);
+    CHECK_EQ(clock.wait(clock.device, 0, 10, nullptr, 0, &token), E_INVALIDARG);
+
+    // As the title starts it: 33,333 us, then event 2 at offset 0, which starts the clock.
+    CHECK(SUCCEEDED(clock.set_interval(clock.device, nullptr, 16667, 1, 0)));
+    CHECK_EQ(clock.schedule(clock.device, 2, 0, nullptr, 0), kStartedClock);
+    HANDLE extra = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    REQUIRE(extra != nullptr);
+    const std::array<HANDLE, 1> handles = {extra};
+    const HandleBlock block{1, 0, handles.data(), nullptr};
+    CHECK_EQ(clock.schedule(clock.device, 0, 0, &block, 0), S_FALSE);
+
+    // Origins come a frame apart, each with a token of its own.
+    REQUIRE(clock.wait(clock.device, 0, 1000, nullptr, 0, &token) == S_OK);
+    const uint64_t first = token;
+    CHECK(first != 0);
+    LARGE_INTEGER start{};
+    QueryPerformanceCounter(&start);
+    token = 0;
+    REQUIRE(clock.wait(clock.device, 0, 1000, nullptr, 0, &token) == S_OK);
+    const double frame = milliseconds_since(start);
+    INFO("a frame took " + std::to_string(frame) + " ms");
+    CHECK(frame > 5.0);
+    CHECK(frame < 200.0);
+    CHECK(token != 0);
+    CHECK(token != first);
+
+    // The title's handle is signalled with the origin, and event 2 comes too.
+    CHECK_EQ(WaitForSingleObject(extra, 1000), DWORD{WAIT_OBJECT_0});
+    CHECK_EQ(clock.wait(clock.device, 2, 1000, nullptr, 0, nullptr), S_OK);
+    // An event that isn't scheduled can't be waited for.
+    CHECK_EQ(clock.wait(clock.device, 1, 10, nullptr, 0, &token), E_INVALIDARG);
+
+    // Taken off the clock, event 2 can't be waited for; with no interval, nothing can.
+    CHECK(SUCCEEDED(clock.schedule(clock.device, 2, 0, nullptr, kUnschedule)));
+    CHECK_EQ(clock.wait(clock.device, 2, 10, nullptr, 0, nullptr), E_INVALIDARG);
+    CHECK(SUCCEEDED(clock.set_interval(clock.device, nullptr, 0, 1, 0)));
+    CHECK_EQ(clock.wait(clock.device, 0, 10, nullptr, 0, &token), E_INVALIDARG);
+    CloseHandle(extra);
+}
+
+TEST_CASE("a frame clock wait that times out returns S_FALSE") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    const Clock clock(fixture);
+    // 15 frames a second: the first origin comes at once, the next one 66.7 ms later.
+    CHECK(SUCCEEDED(clock.set_interval(clock.device, nullptr, 66667, 1, 0)));
+    CHECK_EQ(clock.schedule(clock.device, 0, 0, nullptr, 0), kStartedClock);
+    REQUIRE(clock.wait(clock.device, 0, 1000, nullptr, 0, nullptr) == S_OK);
+    uint64_t token = 0;
+    CHECK_EQ(clock.wait(clock.device, 0, 1, nullptr, 0, &token), S_FALSE);
+    CHECK_EQ(token, uint64_t{0});
+    // With the flag, a token comes even so.
+    CHECK_EQ(clock.wait(clock.device, 0, 1, nullptr, kTokenOnTimeout, &token), S_FALSE);
+    CHECK(token != 0);
+}
