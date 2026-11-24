@@ -26,4 +26,9 @@ HRESULT create_device_proxy(ID3D12Device* real, REFIID riid, void** out);
 // The PC device behind a proxy (no reference added), or null when `device` isn't a live proxy.
 ID3D12Device* device_proxy_real(const void* device);
 
+// The same for the command queues and lists the device makes (docs/d3d12x.md, "Command queues
+// and lists").
+ID3D12CommandQueue* command_queue_proxy_real(const void* queue);
+ID3D12GraphicsCommandList* command_list_proxy_real(const void* list);
+
 } // namespace g6::gpu

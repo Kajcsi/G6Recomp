@@ -1,7 +1,9 @@
 // The device proxy (g6/gpu/device.h) over a WARP device: the base slots reach the PC device, the
 // slots that return structures take both argument orders, the byte at +0x18 is set, the slots
-// not known yet fail, and the proxy's references hold the PC device.
+// not known yet fail, and the proxy's references hold the PC device. Then the command queues and
+// lists it makes, through the PC's slots and the console's.
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <d3d12.h>
@@ -12,6 +14,8 @@
 #include "g6/gpu/device.h"
 #include "g6test.h"
 
+using g6::gpu::command_list_proxy_real;
+using g6::gpu::command_queue_proxy_real;
 using g6::gpu::create_device_proxy;
 using g6::gpu::device_proxy_real;
 using g6::gpu::kDeviceSlots;
@@ -197,9 +201,9 @@ TEST_CASE("slots not known yet fail with E_NOTIMPL") {
     REQUIRE(fixture.proxy != nullptr);
     const void* const* table = table_of(fixture.proxy);
     using Unknown = HRESULT (*)(void* self, uint64_t a, uint64_t b, uint64_t c);
-    // 43 returns a structure in a form not seen yet; 48, 73 and 133 are console methods; the
-    // last slot is the end of the table.
-    for (const unsigned index : {43U, 48U, 73U, 133U, kDeviceSlots - 1}) {
+    // 43 returns a structure in a form not seen yet; 49 and 133 are console methods; the last
+    // slot is the end of the table.
+    for (const unsigned index : {43U, 49U, 133U, kDeviceSlots - 1}) {
         INFO("slot " + std::to_string(index));
         CHECK_EQ(slot<Unknown>(table, index)(fixture.proxy, 1, 2, 3), E_NOTIMPL);
     }
@@ -256,4 +260,256 @@ TEST_CASE("the proxy holds the PC device until its last reference goes") {
     CHECK(device_proxy_real(proxy) == nullptr);
     real->Release();
     real->Release();
+}
+
+namespace {
+
+// An interface the PC SDK doesn't have, as the title asks for its lists by one.
+constexpr GUID kTitleListInterface = {
+    0x6e5a1f0c, 0x2b7d, 0x4c1e, {0x9a, 0x31, 0x5d, 0x08, 0x7f, 0x22, 0xc4, 0x61}};
+
+using CreateQueueX = HRESULT (*)(void* device, const void* desc, const GUID* riid, void** out);
+using CreateListX = HRESULT (*)(void* device, const void* desc, ID3D12CommandAllocator* allocator,
+                                ID3D12PipelineState* initial, const GUID* riid, void** out);
+using Unknown = HRESULT (*)(void* self, uint64_t a, uint64_t b, uint64_t c);
+
+// The console's copy engine type, for queues, allocators and lists.
+constexpr uint32_t kCopyEngine = 0x10;
+
+// A queue through slot 48: the PC's description, then four words of the console's. The default
+// is a direct queue.
+ID3D12CommandQueue* console_queue(const Fixture& fixture, uint32_t type = 0, uint32_t flags = 0) {
+    const std::array<uint32_t, 8> desc = {type, 0, flags, 1, 0x1, 0x0, 0x40000000, 0x1};
+    const GUID riid = __uuidof(ID3D12CommandQueue);
+    ID3D12CommandQueue* queue = nullptr;
+    if (FAILED(slot<CreateQueueX>(table_of(fixture.proxy), 48)(fixture.proxy, desc.data(), &riid,
+                                                               reinterpret_cast<void**>(&queue)))) {
+        return nullptr;
+    }
+    return queue;
+}
+
+// An open direct list through slot 73, as the title's interface.
+void* console_list(const Fixture& fixture, ID3D12CommandAllocator* allocator) {
+    const std::array<uint32_t, 4> desc = {static_cast<uint32_t>(D3D12_COMMAND_LIST_TYPE_DIRECT), 0,
+                                          0, 0};
+    void* list = nullptr;
+    if (FAILED(slot<CreateListX>(table_of(fixture.proxy), 73)(
+            fixture.proxy, desc.data(), allocator, nullptr, &kTitleListInterface, &list))) {
+        return nullptr;
+    }
+    return list;
+}
+
+ID3D12CommandAllocator* direct_allocator(const Fixture& fixture) {
+    ID3D12CommandAllocator* allocator = nullptr;
+    if (FAILED(fixture.proxy->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                     __uuidof(ID3D12CommandAllocator),
+                                                     reinterpret_cast<void**>(&allocator)))) {
+        return nullptr;
+    }
+    return allocator;
+}
+
+} // namespace
+
+TEST_CASE("slots 8 and 48 make command queue proxies") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    D3D12_COMMAND_QUEUE_DESC desc{};
+    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ID3D12CommandQueue* pc = nullptr;
+    REQUIRE(SUCCEEDED(fixture.proxy->CreateCommandQueue(&desc, __uuidof(ID3D12CommandQueue),
+                                                        reinterpret_cast<void**>(&pc))));
+    ID3D12CommandQueue* console = console_queue(fixture);
+    REQUIRE(console != nullptr);
+
+    for (ID3D12CommandQueue* queue : {pc, console}) {
+        const ID3D12CommandQueue* real = command_queue_proxy_real(queue);
+        REQUIRE(real != nullptr);
+        CHECK(static_cast<const void*>(real) != static_cast<const void*>(queue));
+        // GetDevice hands out the device proxy, never the PC device.
+        ID3D12Device* device = nullptr;
+        REQUIRE(
+            SUCCEEDED(queue->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&device))));
+        CHECK(device == fixture.proxy);
+        device->Release();
+        void* answer = nullptr;
+        REQUIRE(SUCCEEDED(queue->QueryInterface(__uuidof(ID3D12Pageable), &answer)));
+        CHECK(answer == queue);
+        static_cast<IUnknown*>(answer)->Release();
+        // Slot 14 waits for a call that shows which of the console's queue layouts the title has.
+        CHECK_EQ(slot<Unknown>(table_of(queue), 14)(queue, 1, 2, 3), E_NOTIMPL);
+    }
+
+    // Each queue holds a reference to the device proxy until its last reference goes.
+    const ULONG with_queues = references(fixture.proxy);
+    CHECK_EQ(pc->Release(), 0U);
+    CHECK_EQ(references(fixture.proxy), with_queues - 1);
+    CHECK(command_queue_proxy_real(pc) == nullptr);
+    CHECK_EQ(console->Release(), 0U);
+    CHECK_EQ(references(fixture.proxy), with_queues - 2);
+}
+
+TEST_CASE("the console's queue flags and copy engine type become the PC's") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    // Compute queues with the console's flags 2 and 3, as the title makes them.
+    for (const uint32_t flags : {1U, 2U, 3U}) {
+        INFO("flags " + std::to_string(flags));
+        ID3D12CommandQueue* queue =
+            console_queue(fixture, static_cast<uint32_t>(D3D12_COMMAND_LIST_TYPE_COMPUTE), flags);
+        REQUIRE(queue != nullptr);
+        const D3D12_COMMAND_QUEUE_DESC desc = command_queue_proxy_real(queue)->GetDesc();
+        CHECK(desc.Type == D3D12_COMMAND_LIST_TYPE_COMPUTE);
+        CHECK_EQ(static_cast<uint32_t>(desc.Flags), flags & 1U);
+        queue->Release();
+    }
+
+    // The copy engine: a queue, an allocator through slot 9, and a list through slot 73.
+    ID3D12CommandQueue* queue = console_queue(fixture, kCopyEngine);
+    REQUIRE(queue != nullptr);
+    CHECK(command_queue_proxy_real(queue)->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_COPY);
+    using CreateAllocator = HRESULT (*)(void* device, uint32_t type, const GUID* riid, void** out);
+    const GUID allocator_interface = __uuidof(ID3D12CommandAllocator);
+    ID3D12CommandAllocator* allocator = nullptr;
+    REQUIRE(SUCCEEDED(slot<CreateAllocator>(table_of(fixture.proxy), 9)(
+        fixture.proxy, kCopyEngine, &allocator_interface, reinterpret_cast<void**>(&allocator))));
+    const std::array<uint32_t, 4> list_desc = {kCopyEngine, 0, 1, 0};
+    void* list = nullptr;
+    REQUIRE(SUCCEEDED(slot<CreateListX>(table_of(fixture.proxy), 73)(
+        fixture.proxy, list_desc.data(), allocator, nullptr, &kTitleListInterface, &list)));
+    CHECK(static_cast<ID3D12GraphicsCommandList*>(list)->GetType() == D3D12_COMMAND_LIST_TYPE_COPY);
+    static_cast<IUnknown*>(list)->Release();
+    allocator->Release();
+    queue->Release();
+}
+
+TEST_CASE("slot 73 makes a list proxy with room for the title's fields") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    ID3D12CommandAllocator* allocator = direct_allocator(fixture);
+    REQUIRE(allocator != nullptr);
+    void* list = console_list(fixture, allocator);
+    REQUIRE(list != nullptr);
+    REQUIRE(command_list_proxy_real(list) != nullptr);
+
+    // The write pointer and the ends start at zero, so every record goes to a method.
+    auto* bytes = static_cast<uint8_t*>(list);
+    for (const size_t offset : {size_t{0x18}, size_t{0x28}, size_t{0x30}}) {
+        uint64_t value = 1;
+        std::memcpy(&value, bytes + offset, sizeof(value));
+        CHECK_EQ(value, uint64_t{0});
+    }
+    // The title writes its own fields up to +0x564; the proxy keeps working after.
+    std::memset(bytes + 0x10, 0x5A, 0x564 - 0x10);
+
+    void* answer = nullptr;
+    REQUIRE(SUCCEEDED(static_cast<IUnknown*>(list)->QueryInterface(kTitleListInterface, &answer)));
+    CHECK(answer == list);
+    static_cast<IUnknown*>(answer)->Release();
+    REQUIRE(SUCCEEDED(static_cast<IUnknown*>(list)->QueryInterface(
+        __uuidof(ID3D12GraphicsCommandList), &answer)));
+    CHECK(answer == list);
+    static_cast<IUnknown*>(answer)->Release();
+
+    auto* pc = static_cast<ID3D12GraphicsCommandList*>(list);
+    CHECK(pc->GetType() == D3D12_COMMAND_LIST_TYPE_DIRECT);
+    ID3D12Device* device = nullptr;
+    REQUIRE(SUCCEEDED(pc->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&device))));
+    CHECK(device == fixture.proxy);
+    device->Release();
+
+    // The console's own slots, and those not mapped yet, fail.
+    for (const unsigned index : {27U, 31U, 60U, 131U, 132U, 146U}) {
+        INFO("list slot " + std::to_string(index));
+        CHECK_EQ(slot<Unknown>(table_of(list), index)(list, 1, 2, 3), E_NOTIMPL);
+    }
+
+    CHECK(SUCCEEDED(pc->Close()));
+    CHECK_EQ(pc->Release(), 0U);
+    CHECK(command_list_proxy_real(list) == nullptr);
+    allocator->Release();
+}
+
+TEST_CASE("a list recorded through the console's slots runs on the queue proxy") {
+    const Fixture fixture;
+    if (fixture.real == nullptr) {
+        SKIP("no WARP device on this host");
+    }
+    REQUIRE(fixture.proxy != nullptr);
+    ID3D12CommandQueue* queue = console_queue(fixture);
+    REQUIRE(queue != nullptr);
+    ID3D12CommandAllocator* allocator = direct_allocator(fixture);
+    REQUIRE(allocator != nullptr);
+    void* list = console_list(fixture, allocator);
+    REQUIRE(list != nullptr);
+
+    const D3D12_QUERY_HEAP_DESC heap_desc{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 1, 0};
+    ID3D12QueryHeap* heap = nullptr;
+    REQUIRE(SUCCEEDED(fixture.proxy->CreateQueryHeap(&heap_desc, __uuidof(ID3D12QueryHeap),
+                                                     reinterpret_cast<void**>(&heap))));
+    const D3D12_HEAP_PROPERTIES readback{D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                                         D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
+    D3D12_RESOURCE_DESC buffer_desc{};
+    buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer_desc.Width = 256;
+    buffer_desc.Height = 1;
+    buffer_desc.DepthOrArraySize = 1;
+    buffer_desc.MipLevels = 1;
+    buffer_desc.SampleDesc.Count = 1;
+    buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* buffer = nullptr;
+    REQUIRE(SUCCEEDED(fixture.proxy->CreateCommittedResource(
+        &readback, D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        __uuidof(ID3D12Resource), reinterpret_cast<void**>(&buffer))));
+
+    // Console slots 57 and 58 are the PC's EndQuery and ResolveQueryData, four slots later.
+    using EndQuery = void (*)(void* list, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index);
+    using ResolveQueryData =
+        void (*)(void* list, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT start, UINT count,
+                 ID3D12Resource* destination, UINT64 offset);
+    const void* const* table = table_of(list);
+    slot<EndQuery>(table, 57)(list, heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    slot<ResolveQueryData>(table, 58)(list, heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 1, buffer, 0);
+    REQUIRE(SUCCEEDED(static_cast<ID3D12GraphicsCommandList*>(list)->Close()));
+
+    // Slot 10 hands the PC queue the list behind the proxy.
+    const std::array<ID3D12CommandList*, 1> lists = {static_cast<ID3D12CommandList*>(list)};
+    queue->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
+
+    ID3D12Fence* fence = nullptr;
+    REQUIRE(SUCCEEDED(fixture.proxy->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence),
+                                                 reinterpret_cast<void**>(&fence))));
+    REQUIRE(SUCCEEDED(command_queue_proxy_real(queue)->Signal(fence, 1)));
+    HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    REQUIRE(done != nullptr);
+    REQUIRE(SUCCEEDED(fence->SetEventOnCompletion(1, done)));
+    CHECK_EQ(WaitForSingleObject(done, 10000), DWORD{WAIT_OBJECT_0});
+    CloseHandle(done);
+
+    const D3D12_RANGE read{0, sizeof(uint64_t)};
+    void* mapped = nullptr;
+    REQUIRE(SUCCEEDED(buffer->Map(0, &read, &mapped)));
+    uint64_t ticks = 0;
+    std::memcpy(&ticks, mapped, sizeof(ticks));
+    const D3D12_RANGE written{0, 0};
+    buffer->Unmap(0, &written);
+    CHECK(ticks != 0);
+
+    fence->Release();
+    buffer->Release();
+    heap->Release();
+    static_cast<IUnknown*>(list)->Release();
+    allocator->Release();
+    queue->Release();
 }

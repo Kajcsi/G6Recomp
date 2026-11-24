@@ -2,21 +2,21 @@
 
 #include "g6/gpu/device.h"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <intrin.h>
-#include <mutex>
-#include <stdexcept>
-#include <unordered_set>
 #include <utility>
 
+#include "command.h"
 #include "g6/log.h"
+#include "proxy.h"
 
 namespace g6::gpu {
 namespace {
+
+static_assert(kDeviceSlots == detail::kProxySlots);
 
 // The object the title holds. The forwarding thunks read the PC device at +8, and the upscaler
 // reads the byte at +0x18 before it copies a descriptor (docs/d3d12x.md, "Descriptor copies").
@@ -31,33 +31,11 @@ struct DeviceProxy {
 static_assert(offsetof(DeviceProxy, real) == 8);
 static_assert(offsetof(DeviceProxy, copies_through_device) == 0x18);
 
-// The base ID3D12Device methods keep their PC slots on the console. Slots 25 and 26 return
-// structures and take the console's argument order (below), and 43 does too but isn't handled
-// yet, so the thunks cover 3 to 42 apart from 25 and 26.
-constexpr unsigned kFirstForwarded = 3;
-constexpr unsigned kEndForwarded = 43;
+// ---- Live proxies and IUnknown ----
 
-// ---- Live proxies ----
-
-std::mutex& live_mutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::unordered_set<const void*>& live() {
-    static std::unordered_set<const void*> proxies;
-    return proxies;
-}
-
-bool is_live(const void* pointer) {
-    const std::scoped_lock lock(live_mutex());
-    return live().contains(pointer);
-}
-
-// ---- IUnknown ----
-
-bool same(const GUID& a, const GUID& b) {
-    return std::memcmp(&a, &b, sizeof(GUID)) == 0;
+detail::LiveSet& live() {
+    static detail::LiveSet set;
+    return set;
 }
 
 bool is_device_interface(const GUID& iid) {
@@ -69,21 +47,7 @@ bool is_device_interface(const GUID& iid) {
         __uuidof(ID3D12Device10), __uuidof(ID3D12Device11), __uuidof(ID3D12Device12),
         __uuidof(ID3D12Device13), __uuidof(ID3D12Device14),
     };
-    for (const GUID& known : kInterfaces) {
-        if (same(iid, known)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void log_refused_interface(const GUID& iid, const void* caller) {
-    LOG_WARN(
-        d3d12,
-        "device QueryInterface({:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}"
-        "{:02x}) from {}: not served by the proxy",
-        iid.Data1, iid.Data2, iid.Data3, iid.Data4[0], iid.Data4[1], iid.Data4[2], iid.Data4[3],
-        iid.Data4[4], iid.Data4[5], iid.Data4[6], iid.Data4[7], caller);
+    return detail::any_of(iid, kInterfaces);
 }
 
 // Answers the device interfaces the PC device has, with the proxy itself.
@@ -111,7 +75,7 @@ HRESULT STDMETHODCALLTYPE query_interface(DeviceProxy* self, const GUID* iid, vo
     }
     const HRESULT result = answer(self, *iid, out);
     if (FAILED(result)) {
-        log_refused_interface(*iid, _ReturnAddress());
+        detail::log_refused_interface("device", *iid, _ReturnAddress());
     }
     return result;
 }
@@ -129,14 +93,16 @@ ULONG STDMETHODCALLTYPE release(DeviceProxy* self) {
         return 0; // a Release too many: never below zero, and never a second free
     }
     if (count == 1) {
-        {
-            const std::scoped_lock lock(live_mutex());
-            live().erase(self);
-        }
+        live().erase(self);
         self->real->Release();
         delete self;
     }
     return count - 1;
+}
+
+// The proxy as a COM object: its table starts with IUnknown's three slots.
+IUnknown* as_unknown(DeviceProxy* self) {
+    return reinterpret_cast<IUnknown*>(self);
 }
 
 // ---- Methods that return structures ----
@@ -146,10 +112,10 @@ ULONG STDMETHODCALLTYPE release(DeviceProxy* self) {
 // PC"). Both forms come here, and the device is whichever of the two is a live proxy. The other
 // arguments sit in the same places either way, and the buffer goes back in rax in both.
 DeviceProxy* device_of(void*& first, void*& second) {
-    if (is_live(first)) {
+    if (live().contains(first)) {
         return static_cast<DeviceProxy*>(first);
     }
-    if (is_live(second)) {
+    if (live().contains(second)) {
         std::swap(first, second);
         return static_cast<DeviceProxy*>(first);
     }
@@ -191,86 +157,184 @@ D3D12_HEAP_PROPERTIES* custom_heap_properties(void* first, void* second, UINT no
     return buffer;
 }
 
-// ---- Slots not known yet ----
+// ---- Command queues and lists (docs/d3d12x.md, "Command queues and lists") ----
 
-std::array<std::atomic<bool>, kDeviceSlots>& reported() {
-    static std::array<std::atomic<bool>, kDeviceSlots> flags{};
-    return flags;
+// The console's list and queue types add one for its copy engine, which the PC calls COPY.
+constexpr uint32_t kConsoleCopyEngine = 0x10;
+
+D3D12_COMMAND_LIST_TYPE pc_list_type(uint32_t type) {
+    return type == kConsoleCopyEngine ? D3D12_COMMAND_LIST_TYPE_COPY
+                                      : static_cast<D3D12_COMMAND_LIST_TYPE>(type);
 }
 
-template <unsigned Slot>
-HRESULT STDMETHODCALLTYPE unknown_slot(void* /*self*/, uint64_t a, uint64_t b, uint64_t c) {
-    if (!reported()[Slot].exchange(true, std::memory_order_relaxed)) {
-        LOG_WARN(d3d12,
-                 "device slot {} called from {} with {:#x}, {:#x}, {:#x}: not implemented, "
-                 "E_NOTIMPL",
-                 Slot, _ReturnAddress(), a, b, c);
+// One adapter: any node mask the title gives is the first node.
+UINT pc_node_mask(uint32_t mask) {
+    return mask == 0 ? 0 : 1;
+}
+
+// The console's queue description has the PC's four fields. Its flags have bits the PC doesn't
+// (run 10 makes compute queues with 2 and 3), which it refuses, so only DISABLE_GPU_TIMEOUT is
+// kept; a priority the PC doesn't have becomes NORMAL.
+D3D12_COMMAND_QUEUE_DESC pc_queue_desc(const D3D12_COMMAND_QUEUE_DESC& title) {
+    D3D12_COMMAND_QUEUE_DESC pc{};
+    pc.Type = pc_list_type(static_cast<uint32_t>(title.Type));
+    pc.Priority = title.Priority;
+    if (title.Priority != D3D12_COMMAND_QUEUE_PRIORITY_NORMAL &&
+        title.Priority != D3D12_COMMAND_QUEUE_PRIORITY_HIGH &&
+        title.Priority != D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME) {
+        LOG_WARN(d3d12, "command queue priority {} is not the PC's: NORMAL", title.Priority);
+        pc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
     }
-    return E_NOTIMPL;
+    const auto flags = static_cast<uint32_t>(title.Flags);
+    pc.Flags = static_cast<D3D12_COMMAND_QUEUE_FLAGS>(flags &
+                                                      D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT);
+    if ((flags & ~static_cast<uint32_t>(D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT)) != 0) {
+        LOG_DEBUG(d3d12, "command queue flags {:#x} (type {}): the console's bits are dropped",
+                  flags, static_cast<int>(title.Type));
+    }
+    pc.NodeMask = pc_node_mask(title.NodeMask);
+    return pc;
 }
 
-template <unsigned... Slots>
-std::array<const void*, kDeviceSlots>
-unknown_slots(std::integer_sequence<unsigned, Slots...> /*slots*/) {
-    return {reinterpret_cast<const void*>(&unknown_slot<Slots>)...};
+HRESULT queue_for(DeviceProxy* self, const D3D12_COMMAND_QUEUE_DESC& title, const GUID* riid,
+                  void** out) {
+    if (out == nullptr || riid == nullptr) {
+        return E_POINTER;
+    }
+    *out = nullptr;
+    const D3D12_COMMAND_QUEUE_DESC desc = pc_queue_desc(title);
+    ID3D12CommandQueue* queue = nullptr;
+    HRESULT result = self->real->CreateCommandQueue(&desc, __uuidof(ID3D12CommandQueue),
+                                                    reinterpret_cast<void**>(&queue));
+    if (FAILED(result)) {
+        LOG_ERROR(d3d12, "CreateCommandQueue(type {}, priority {}, flags {:#x}) failed: {:#x}",
+                  static_cast<int>(desc.Type), desc.Priority, static_cast<unsigned>(desc.Flags),
+                  static_cast<uint32_t>(result));
+        return result;
+    }
+    result = detail::wrap_queue(queue, as_unknown(self), *riid, out);
+    if (FAILED(result)) {
+        queue->Release();
+    }
+    return result;
+}
+
+// Slot 8, CreateCommandQueue, with the PC's arguments and the console's types and flags.
+HRESULT STDMETHODCALLTYPE create_command_queue(DeviceProxy* self,
+                                               const D3D12_COMMAND_QUEUE_DESC* desc,
+                                               const GUID* riid, void** out) {
+    if (desc == nullptr) {
+        return E_INVALIDARG;
+    }
+    return queue_for(self, *desc, riid, out);
+}
+
+// Slot 9, CreateCommandAllocator, with the console's types.
+HRESULT STDMETHODCALLTYPE create_command_allocator(DeviceProxy* self, uint32_t type,
+                                                   const GUID* riid, void** out) {
+    if (out == nullptr || riid == nullptr) {
+        return E_POINTER;
+    }
+    return self->real->CreateCommandAllocator(pc_list_type(type), *riid, out);
+}
+
+// Slot 48, the console's CreateCommandQueueX: a description that starts with the PC's and goes
+// on with words of the console's own, which are logged.
+HRESULT STDMETHODCALLTYPE create_command_queue_x(DeviceProxy* self, const void* desc,
+                                                 const GUID* riid, void** out) {
+    if (desc == nullptr) {
+        return E_INVALIDARG;
+    }
+    D3D12_COMMAND_QUEUE_DESC title{};
+    std::memcpy(&title, desc, sizeof(title));
+    std::array<uint32_t, 4> more{};
+    std::memcpy(more.data(), static_cast<const uint8_t*>(desc) + sizeof(title), sizeof(more));
+    LOG_DEBUG(d3d12,
+              "device slot 48 (CreateCommandQueueX): type {}, priority {}, flags {:#x}, node mask "
+              "{:#x}, then {:#x} {:#x} {:#x} {:#x}",
+              static_cast<int>(title.Type), title.Priority, static_cast<unsigned>(title.Flags),
+              title.NodeMask, more[0], more[1], more[2], more[3]);
+    return queue_for(self, title, riid, out);
+}
+
+HRESULT list_for(DeviceProxy* self, uint32_t node_mask, uint32_t title_type,
+                 ID3D12CommandAllocator* allocator, ID3D12PipelineState* initial, const GUID* riid,
+                 void** out) {
+    if (out == nullptr || riid == nullptr) {
+        return E_POINTER;
+    }
+    *out = nullptr;
+    const D3D12_COMMAND_LIST_TYPE type = pc_list_type(title_type);
+    ID3D12GraphicsCommandList* list = nullptr;
+    HRESULT result = self->real->CreateCommandList(pc_node_mask(node_mask), type, allocator,
+                                                   initial, __uuidof(ID3D12GraphicsCommandList),
+                                                   reinterpret_cast<void**>(&list));
+    if (FAILED(result)) {
+        LOG_ERROR(d3d12, "CreateCommandList(type {}) failed: {:#x}", static_cast<int>(type),
+                  static_cast<uint32_t>(result));
+        return result;
+    }
+    result = detail::wrap_list(list, as_unknown(self), *riid, out);
+    if (FAILED(result)) {
+        list->Release();
+    }
+    return result;
+}
+
+// Slot 12, CreateCommandList, with the PC's arguments and the console's types.
+HRESULT STDMETHODCALLTYPE create_command_list(DeviceProxy* self, UINT node_mask, uint32_t type,
+                                              ID3D12CommandAllocator* allocator,
+                                              ID3D12PipelineState* initial, const GUID* riid,
+                                              void** out) {
+    return list_for(self, node_mask, type, allocator, initial, riid, out);
+}
+
+// Slot 73, the console's CreateCommandListX: a 16-byte description with the list type at +0 and
+// the node mask at +8 (run 10: 0, 2, 1, 0), then the allocator, the initial pipeline state, and
+// an interface the PC SDK doesn't have.
+HRESULT STDMETHODCALLTYPE create_command_list_x(DeviceProxy* self, const void* desc,
+                                                ID3D12CommandAllocator* allocator,
+                                                ID3D12PipelineState* initial, const GUID* riid,
+                                                void** out) {
+    if (desc == nullptr) {
+        return E_INVALIDARG;
+    }
+    std::array<uint32_t, 4> words{};
+    std::memcpy(words.data(), desc, sizeof(words));
+    static std::atomic<bool> seen{false};
+    if (riid != nullptr && !seen.exchange(true, std::memory_order_relaxed)) {
+        LOG_INFO(d3d12,
+                 "device slot 73 (CreateCommandListX) first called: description {:#x} {:#x} "
+                 "{:#x} {:#x}, interface {:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}"
+                 "{:02x}{:02x}{:02x}",
+                 words[0], words[1], words[2], words[3], riid->Data1, riid->Data2, riid->Data3,
+                 riid->Data4[0], riid->Data4[1], riid->Data4[2], riid->Data4[3], riid->Data4[4],
+                 riid->Data4[5], riid->Data4[6], riid->Data4[7]);
+    }
+    return list_for(self, words[2], words[0], allocator, initial, riid, out);
 }
 
 // ---- The table ----
 
-constexpr size_t kPage = 4096;
-constexpr size_t kThunkSize = 16;
-static_assert(kEndForwarded * kThunkSize <= kPage);
-static_assert(kDeviceSlots * sizeof(void*) <= kPage);
-
-// mov rcx, [rcx+8] ; mov rax, [rcx] ; jmp [rax + slot*8]
-// The thunk swaps the proxy for the PC device and jumps to the PC method, which returns straight
-// to the title. It never touches the stack, so it needs no unwind data.
-void write_forward(uint8_t* at, unsigned slot) {
-    constexpr std::array<uint8_t, 9> kHead = {0x48, 0x8B, 0x49, 0x08, 0x48, 0x8B, 0x01, 0xFF, 0xA0};
-    std::memset(at, 0xCC, kThunkSize);
-    std::memcpy(at, kHead.data(), kHead.size());
-    const uint32_t displacement = slot * sizeof(void*);
-    std::memcpy(at + kHead.size(), &displacement, sizeof(displacement));
-}
-
-// Three pages: the thunks, then the table at the end of the second page, then a page with no
-// access, so a slot past the table faults at a clear address.
-const void* const* build_table() {
-    auto* region =
-        static_cast<uint8_t*>(VirtualAlloc(nullptr, 3 * kPage, MEM_RESERVE, PAGE_NOACCESS));
-    if (region == nullptr ||
-        VirtualAlloc(region, 2 * kPage, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
-        throw std::runtime_error("cannot allocate the device proxy's table");
-    }
-    uint8_t* thunks = region;
-    auto* table =
-        reinterpret_cast<const void**>(region + 2 * kPage - (kDeviceSlots * sizeof(void*)));
-
-    const std::array<const void*, kDeviceSlots> unknown =
-        unknown_slots(std::make_integer_sequence<unsigned, kDeviceSlots>{});
-    std::ranges::copy(unknown, table);
-    table[0] = reinterpret_cast<const void*>(&query_interface);
-    table[1] = reinterpret_cast<const void*>(&add_ref);
-    table[2] = reinterpret_cast<const void*>(&release);
-    for (unsigned slot = kFirstForwarded; slot < kEndForwarded; ++slot) {
-        uint8_t* thunk = thunks + (slot * kThunkSize);
-        write_forward(thunk, slot);
-        table[slot] = thunk;
-    }
-    table[25] = reinterpret_cast<const void*>(&resource_allocation_info);
-    table[26] = reinterpret_cast<const void*>(&custom_heap_properties);
-
-    DWORD old = 0;
-    if (!VirtualProtect(thunks, kPage, PAGE_EXECUTE_READ, &old) ||
-        !VirtualProtect(region + kPage, kPage, PAGE_READONLY, &old)) {
-        throw std::runtime_error("cannot protect the device proxy's table");
-    }
-    FlushInstructionCache(GetCurrentProcess(), thunks, kPage);
-    return table;
-}
-
+// The base ID3D12Device methods keep their PC slots on the console, 3 to 42 here. Slot 43 returns
+// a structure in a form not seen yet, and the console's table differs from the PC's from 44 on, so
+// those stay logged until each is measured.
 const void* const* table() {
-    static const void* const* const kTable = build_table();
+    static const void* const* const kTable = [] {
+        detail::ProxyTable table(detail::ProxyKind::device);
+        table.set(0, reinterpret_cast<const void*>(&query_interface));
+        table.set(1, reinterpret_cast<const void*>(&add_ref));
+        table.set(2, reinterpret_cast<const void*>(&release));
+        table.forward_range(3, 43);
+        table.set(8, reinterpret_cast<const void*>(&create_command_queue));
+        table.set(9, reinterpret_cast<const void*>(&create_command_allocator));
+        table.set(12, reinterpret_cast<const void*>(&create_command_list));
+        table.set(25, reinterpret_cast<const void*>(&resource_allocation_info));
+        table.set(26, reinterpret_cast<const void*>(&custom_heap_properties));
+        table.set(48, reinterpret_cast<const void*>(&create_command_queue_x));
+        table.set(73, reinterpret_cast<const void*>(&create_command_list_x));
+        return table.finish();
+    }();
     return kTable;
 }
 
@@ -288,17 +352,11 @@ HRESULT create_device_proxy(ID3D12Device* real, REFIID riid, void** out) {
     proxy->vtable = table();
     proxy->real = real;
     proxy->copies_through_device = 1;
-    {
-        const std::scoped_lock lock(live_mutex());
-        live().insert(proxy);
-    }
+    live().insert(proxy);
     const HRESULT result = answer(proxy, riid, out);
     if (FAILED(result)) {
-        log_refused_interface(riid, _ReturnAddress());
-        {
-            const std::scoped_lock lock(live_mutex());
-            live().erase(proxy);
-        }
+        detail::log_refused_interface("device", riid, _ReturnAddress());
+        live().erase(proxy);
         delete proxy;
     }
     return result;
@@ -327,7 +385,7 @@ HRESULT create_device(REFIID riid, void** out) {
 }
 
 ID3D12Device* device_proxy_real(const void* device) {
-    if (!is_live(device)) {
+    if (!live().contains(device)) {
         return nullptr;
     }
     return static_cast<const DeviceProxy*>(device)->real;
