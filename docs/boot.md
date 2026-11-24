@@ -23,7 +23,7 @@ problems, not all of them. Most of Leonida's fixes are local stand-ins, tested o
 | 4 | The game's allocator reads its static TLS from module index 0 (it is built with `/GA`) | Giving the executable index 0 | Done: the runner links `g6exetls` ([execution-model.md](execution-model.md), "TLS and the TEB") |
 | 5 | A fatal assert when `DStorageGetFactory` returns null | A DirectStorage factory | Done: `runtime/io` serves the factory, files, queues and status arrays ([io.md](io.md), "DirectStorage") |
 | 6 | `XMemAllocatePhysicalPages` is missing, and the game asserts when it returns FALSE | A CPU-only stand-in (below) | Done: `memory_tracker` backs the pages (below) |
-| 7 | `D3D12XboxCreateDevice` succeeds, then device slot 26 is called with the return buffer first | Swapping the first two arguments (below) | M3: `runtime/gpu` |
+| 7 | `D3D12XboxCreateDevice` succeeds, then device slot 26 is called with the return buffer first | Swapping the first two arguments (below) | Done: the device proxy takes both orders for slots 25 and 26 ([d3d12x.md](d3d12x.md), "Our device") |
 | 8 | Device slot 48 is forwarded to the PC's slot 48, which is something else | Creating a command queue (below) | M3 |
 | 9 | Device slot 73 is forwarded to the PC's slot 73, and the game then reads through a null list | Creating a command list (below) | M3 |
 | 10 | An `XMemVirtualAlloc` reserve of about 185 MiB, with allocation type `0x42000`, attribute 7 and `PAGE_NOACCESS`, fails with `ERROR_INVALID_PARAMETER` | Reading `0x40000` as `MEM_RESERVE_PLACEHOLDER`, which only `VirtualAlloc2` accepts, and reserving a placeholder | Done in `memory_tracker`, not reached yet |
@@ -126,7 +126,8 @@ logs stay in `private/runs/`.
 | 5 | The factory's slot 8 (`SetStagingBufferSize`, 32 MiB) and slot 4 (`OpenFile`) fail; the game asserts after each, then crashes in `memset` with a null destination | The factory, files, queues and status arrays of [io.md](io.md), "DirectStorage" |
 | 6 | `XMemAllocatePhysicalPages` is unbound (Leonida's stop 6); after the assert the game reads through a null pointer | The physical-page functions (above) |
 | 7 | The first allocation, 11,360 pages with attribute word `0x280`, succeeds. Then `RegisterClassExA` (`ext-ms-win-rtcore-ntuser-window-ansi`) fails as a stub, the game asserts, and it reads through a null pointer at offset 0x18 | The window and message functions, forwarded to user32 ([hle-status.md](hle-status.md)) |
-| 8 | The window class and the window are made. `D3D12XboxCreateDevice` is unbound (Leonida's stop 7 comes once it succeeds); the game asserts at the same place as in run 7 and reads through the same null pointer | M3: `runtime/gpu` ([d3d12x.md](d3d12x.md)) |
+| 8 | The window class and the window are made. `D3D12XboxCreateDevice` is unbound (Leonida's stop 7 comes once it succeeds); the game asserts at the same place as in run 7 and reads through the same null pointer | `D3D12XboxCreateDevice` and the device proxy ([d3d12x.md](d3d12x.md), "Our device") |
+| 9 | The device is made. The title passes no adapter, asks for `ID3D12Device11`, and passes a parameter block whose first word is `0x20004`, the SDK version xcl reports. Slot 26 goes through. Slot 48 (Leonida's stop 8) is refused, the game asserts, and then slot 73 (stop 9) is refused and the game reads through the null list | Command queues and command lists |
 
 From run 2 on, the game also asks `QueryApiImpl` for Game Runtime services we don't serve yet:
 XNetworkingImpl, XGameImpl, XSystemImpl, XSystemAnalyticsImpl, and services `af406016`,

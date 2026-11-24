@@ -234,12 +234,17 @@ TEST_CASE("the xmem functions the executable calls first are HLE") {
     }
 }
 
-TEST_CASE("D3D12ConfigureVirtualMemoryX is HLE, before the device") {
+TEST_CASE("D3D12ConfigureVirtualMemoryX and D3D12XboxCreateDevice are HLE") {
     ImportRegistry policy = default_game_policy();
-    const Resolution resolution =
-        policy.resolve("d3d12_xs.dll", Symbol::by_name("D3D12ConfigureVirtualMemoryX"));
-    CHECK(resolution.binding == Binding::Hle);
-    CHECK(resolution.address != nullptr);
+    for (const char* name : {"D3D12ConfigureVirtualMemoryX", "D3D12XboxCreateDevice"}) {
+        INFO(name);
+        const Resolution resolution = policy.resolve("d3d12_xs.dll", Symbol::by_name(name));
+        CHECK(resolution.binding == Binding::Hle);
+        CHECK(resolution.address != nullptr);
+    }
+    // The rest of d3d12_xs.dll is still a stub.
+    CHECK(policy.resolve("d3d12_xs.dll", Symbol::by_name("D3D12SerializeVersionedRootSignature"))
+              .binding != Binding::Hle);
 }
 
 TEST_CASE("the app-state notifications are the host's") {

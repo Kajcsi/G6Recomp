@@ -349,6 +349,11 @@ g6_add_test(test_memory_tracker LABEL nogame
     SOURCES gpu/test_memory_tracker.cpp
     LIBS g6gpu)
 
+# The device proxy (runtime/gpu) over a WARP device.
+g6_add_test(test_device LABEL nogame
+    SOURCES gpu/test_device.cpp
+    LIBS g6gpu dxgi)
+
 # The GameInput stand-in (runtime/input) the boot uses until M4.
 g6_add_test(test_input LABEL nogame
     SOURCES input/test_game_input.cpp

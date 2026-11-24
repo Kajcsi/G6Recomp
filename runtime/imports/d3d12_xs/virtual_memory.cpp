@@ -25,6 +25,8 @@ HRESULT D3D12ConfigureVirtualMemoryX(const void* description) {
 void register_d3d12_xs(loader::ImportRegistry& imports) {
     imports.hle("d3d12_xs.dll", loader::Symbol::by_name("D3D12ConfigureVirtualMemoryX"),
                 reinterpret_cast<const void*>(&D3D12ConfigureVirtualMemoryX));
+    imports.hle("d3d12_xs.dll", loader::Symbol::by_name("D3D12XboxCreateDevice"),
+                reinterpret_cast<const void*>(&D3D12XboxCreateDevice));
 }
 
 } // namespace g6::imports::d3d12_xs
