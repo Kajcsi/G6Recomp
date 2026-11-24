@@ -92,7 +92,11 @@ public:
 
     // Frees what `allocate`, `reserve_placeholder`, or `carve_physical` made, like VirtualFree.
     // MEM_RELEASE of a range's base releases every piece the tracker split it into, unmapping
-    // the pages mapped there.
+    // the pages mapped there. The placeholder forms keep the table in step with the host:
+    // MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER splits [address, address + size) out of a
+    // placeholder, or puts the allocation or mapped page at `address` back into one, and
+    // MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS joins the placeholders in that range into one.
+    // Anything else, or memory the tracker didn't make, goes to VirtualFree as it is.
     BOOL free(void* address, size_t size, DWORD type);
 
     // Allocates `*count` physical pages and writes their numbers to `pages`. Each call is backed
@@ -150,6 +154,10 @@ private:
     bool map_page(uintptr_t address, uint64_t page);
     // With the mutex held: unmaps the page mapped in piece `it`, which becomes a placeholder.
     bool unmap_page(const std::map<uintptr_t, Range>::iterator& it);
+    // With the mutex held: VirtualFree's MEM_PRESERVE_PLACEHOLDER and MEM_COALESCE_PLACEHOLDERS
+    // forms (`free`).
+    BOOL preserve_placeholder(uintptr_t begin, size_t size, DWORD type);
+    BOOL coalesce_placeholders(uintptr_t begin, size_t size, DWORD type);
 
     mutable std::mutex mutex_;
     // Every range the tracker made, by base. Placeholder pieces are listed as Windows sees

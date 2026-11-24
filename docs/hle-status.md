@@ -77,7 +77,8 @@ Notes for `runtime/kernel`:
   (0x40000000) each make the call fail with `ERROR_INVALID_PARAMETER`, with or without
   `MEM_RESERVE`. Leonida reported the bit values and drops both. Here `MEM_GRAPHICS` memory is
   GPU-visible, so it goes through `memory_tracker`, and `MEM_TITLE` is dropped. No side DLL
-  imports `api-ms-win-core-memory-*`, so the family is unbound until the executable needs it.
+  imports `api-ms-win-core-memory-*`; the executable imports `VirtualAlloc`, `VirtualFree`, and
+  `VirtualQueryEx` (`runtime/imports/kernelbase`, below).
 
 So far there is the loader's own HLE, and `runtime/imports` with the default import policy
 (`default_game_policy()`), xmem, COM and WinRT activation, and the path functions on
@@ -144,7 +145,7 @@ rows here. Why each row is what it is: [side-dlls.md](side-dlls.md), "Default im
 | `xaudio2_9` | forwarded | Ordinal 1 bound by name to `XAudio2Create`. Bink's use is unverified until a video plays with sound. |
 | `xmem.dll` | partial | `runtime/imports/xmem` |
 | `ext-ms-win-rtcore-ntuser-window-*`, `ext-ms-win-rtcore-ntuser-message-*` (and their `-ansi` sets) | forwarded | The seven functions the executable imports, bound from `user32` by name, since a host need not have the extension sets: `RegisterClassExA`, `CreateWindowExA`, `DefWindowProcA`, `ShowWindow`, `PeekMessageA`, `DispatchMessageA`, and `TranslateMessage`. The window procedure is guest code, which `user32` calls directly. Anything else from these sets is unreviewed and stubbed. |
-| `api-ms-win-core-memory-*` | stubbed | `VirtualAlloc`, `VirtualFree`, and `VirtualQueryEx`, which the executable imports. The game uses them on its physical-page windows and placeholders (xcl, Leonida; [boot.md](boot.md)), so they become HLE through `memory_tracker`, not forwards. |
+| `api-ms-win-core-memory-*` (and the same names from `kernel32`, `kernelbase`) | partial | `VirtualAlloc` and `VirtualFree`, which the executable imports, are HLE through `memory_tracker` (`runtime/imports/kernelbase`, below), since the game uses them on its physical-page ranges and placeholders ([boot.md](boot.md)). `VirtualQueryEx` is forwarded. Anything else from the family is stubbed. |
 | `d3d12_xs.dll` | partial | HLE in `runtime/imports/d3d12_xs`: `D3D12ConfigureVirtualMemoryX` logs the description and succeeds, since the host GPU has its own address space, and `D3D12XboxCreateDevice` hands out `runtime/gpu`'s device proxy over a PC device on the default adapter, which makes queue and list proxies ([d3d12x.md](d3d12x.md), "Our device" and "Command queues and lists"). The adapter and the parameter block are logged, not used. Everything else is `E_NOTIMPL`. |
 | `gameinput.dll` | partial | Ordinal 1, `GameInputCreate`, the only import, gives a stand-in `IGameInput` with no devices (`runtime/input`): the timestamp works, and every other slot is logged once and fails with `E_NOTIMPL`. Keyboard, mouse, and gamepads come at M4. |
 | `xcrdapi.dll` | partial | DirectStorage. `DStorageGetFactory`, the only import, gives `runtime/io`'s factory ([io.md](io.md), "DirectStorage"). |
@@ -235,6 +236,17 @@ the title takes its console paths, and no other key: the host registry is never 
 | `RegOpenKeyExW`, `RegOpenKeyW` | partial | The OEM key under `HKEY_LOCAL_MACHINE`, in any case and with stray separators, opens as a handle of our own. Any other key is logged once and gets `ERROR_CALL_NOT_IMPLEMENTED`. |
 | `RegQueryValueExW` | partial | On the OEM key: `ConsoleMode` is `REG_DWORD` 0x64, with the Win32 size rules (`ERROR_MORE_DATA` and the needed size for a short buffer); other values, the default value included, are `ERROR_FILE_NOT_FOUND`. On any other key: logged once, `ERROR_CALL_NOT_IMPLEMENTED`. |
 | `RegCloseKey` | implemented | Only the OEM key is ever open; anything else is `ERROR_INVALID_HANDLE`. |
+
+Memory, for imports from `api-ms-win-core-memory-*`, `kernel32`, and `kernelbase`. The game
+reserves, splits, and frees its physical-page ranges and placeholders with these as well as with
+xmem, so `memory_tracker` has to see every call that changes a range ([boot.md](boot.md),
+"Physical pages").
+
+| Function | Status | Notes |
+|---|---|---|
+| `VirtualAlloc` | implemented | The console's allocation types, made as `XMemVirtualAlloc` makes them (`runtime/imports/xmem`). `MEM_TITLE` (0x40000000) is dropped. `MEM_GRAPHICS` (0x10000000) becomes GPU read-write access in `memory_tracker` unless the protection names a `PAGE_GRAPHICS_*` access itself. `MEM_RESET` and `MEM_RESET_UNDO` go to the host as they are. |
+| `VirtualFree` | implemented | Through `memory_tracker`. Releasing a range it made releases every piece of it and unmaps its pages. `MEM_RELEASE \| MEM_PRESERVE_PLACEHOLDER` splits a placeholder, or puts an allocation or a mapped page back into one, and `MEM_RELEASE \| MEM_COALESCE_PLACEHOLDERS` joins placeholders; the host checks each, and the tracker's table follows. In run 13 the game splits its first placeholder this way before it carves ranges for physical pages out of it. Decommits, and memory the tracker didn't make, go to the host as they are. |
+| `VirtualQueryEx` | forwarded | The host's answer is the truth about a range: the tracker's placeholders and pages are host placeholders and views. |
 
 ## runtime/imports/ucrtbase
 

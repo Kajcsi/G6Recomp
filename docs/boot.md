@@ -26,8 +26,8 @@ problems, not all of them. Most of Leonida's fixes are local stand-ins, tested o
 | 7 | `D3D12XboxCreateDevice` succeeds, then device slot 26 is called with the return buffer first | Swapping the first two arguments (below) | Done: the device proxy takes both orders for slots 25 and 26 ([d3d12x.md](d3d12x.md), "Our device") |
 | 8 | Device slot 48 is forwarded to the PC's slot 48, which is something else | Creating a command queue (below) | Done: queue proxies, with the console's flags and types mapped ([d3d12x.md](d3d12x.md), "Command queues and lists") |
 | 9 | Device slot 73 is forwarded to the PC's slot 73, and the game then reads through a null list | Creating a command list (below) | Done: list proxies, with room for the title's fields (same section) |
-| 10 | An `XMemVirtualAlloc` reserve of about 185 MiB, with allocation type `0x42000`, attribute 7 and `PAGE_NOACCESS`, fails with `ERROR_INVALID_PARAMETER` | Reading `0x40000` as `MEM_RESERVE_PLACEHOLDER`, which only `VirtualAlloc2` accepts, and reserving a placeholder | Done in `memory_tracker`, not reached yet |
-| 11 | The game carves five ranges out of that placeholder with `MEM_RESERVE \| MEM_REPLACE_PLACEHOLDER \| MEM_PHYSICAL \| MEM_LARGE_PAGES` (`0x20406000`), then allocates more physical pages | A physical reserve inside a placeholder stays a placeholder, which page maps split later; any other replacing reserve splits the placeholder and allocates the range in place | Done in `memory_tracker`, not reached yet |
+| 10 | An `XMemVirtualAlloc` reserve of about 185 MiB, with allocation type `0x42000`, attribute 7 and `PAGE_NOACCESS`, fails with `ERROR_INVALID_PARAMETER` | Reading `0x40000` as `MEM_RESERVE_PLACEHOLDER`, which only `VirtualAlloc2` accepts, and reserving a placeholder | Done in `memory_tracker`, reached in run 12 |
+| 11 | The game carves five ranges out of that placeholder with `MEM_RESERVE \| MEM_REPLACE_PLACEHOLDER \| MEM_PHYSICAL \| MEM_LARGE_PAGES` (`0x20406000`), then allocates more physical pages | A physical reserve inside a placeholder stays a placeholder, which page maps split later; any other replacing reserve splits the placeholder and allocates the range in place | Done in `memory_tracker`, reached in run 13, where the game splits the placeholder itself with `VirtualFree` first |
 | 12 | Device slot 133 is called through a proxy vtable of 128 slots, so it jumps through a null pointer | A 192-slot table and a stand-in for slot 133 (below) | M3 |
 | 13 | Right after the first `CreateDescriptorHeap`, the game calls the heap's slot 9 (`GetCPUDescriptorHandleForHeapStart` on the PC) and asserts that the handle equals a value it already holds | Open. Leonida's guess: a console descriptor heap starts at an address the game chose or can predict | M3 |
 
@@ -84,8 +84,11 @@ Later findings change the backing ([related-work.md](related-work.md)):
 * A page freed while mapped keeps its memory until its views go, and releasing a whole range
   unmaps its views.
 
-Maps work only in ranges reserved for physical pages, at 64 KiB addresses. The fourth point, the
-`VirtualAlloc` and `VirtualFree` imports and the first placeholder below 4 GiB, is still to do.
+Maps work only in ranges reserved for physical pages, at 64 KiB addresses. Of the fourth point,
+`VirtualAlloc` and `VirtualFree` now go through `memory_tracker` too, with the title's own splits
+and joins of placeholders ([hle-status.md](hle-status.md), "runtime/imports/kernelbase"). The
+first placeholder below 4 GiB is still to do: in run 13 it lies at `0x132b00000`, and nothing has
+failed on that yet.
 The sections and the page table belong to `memory_tracker`, so the GPU side can follow at M3.
 
 ### D3D12 device calls that differ from the PC
@@ -130,6 +133,8 @@ logs stay in `private/runs/`.
 | 9 | The device is made. The title passes no adapter, asks for `ID3D12Device11`, and passes a parameter block whose first word is `0x20004`, the SDK version xcl reports. Slot 26 goes through. Slot 48 (Leonida's stop 8) is refused, the game asserts, and then slot 73 (stop 9) is refused and the game reads through the null list | Queue and list proxies ([d3d12x.md](d3d12x.md), "Command queues and lists") |
 | 10 | Slot 48 makes four compute queues, with flags 1, 2, 3 and 0. The PC refuses 2 and 3, and the game asserts after each. The list is made; then list slots 132 and 131, a device `QueryInterface` for `IDXGIDevice`, and device slots 78 (`0, 33333, 3`) and 79 (`2, 0, 0`) are refused. The game asserts after slot 79, asserts again at +0x19f4f58, and reads through a null pointer at offset 0x18 at +0x5eb24bf | Only `DISABLE_GPU_TIMEOUT` is kept of the queue flags, and the console's copy-engine type becomes the PC's `COPY` |
 | 11 | All four queues are made. The rest is as in run 10, from list slot 132 on | The frame clock, device slots 78 and 79 (by xcl and Leonida, `SetFrameIntervalX` and `ScheduleFrameEventX`) |
+| 12 | Slots 78 and 79 succeed: a 33,333 µs frame with periodicity 3, then events 0 and 2 at offset 0, and the clock starts. The game reserves a 185 MiB placeholder with `XMemVirtualAlloc` (Leonida's stop 10), then calls `VirtualFree`, still a stub. It asserts at +0x19f4f58 and reads through the null pointer at +0x5eb24bf | `VirtualAlloc` and `VirtualFree` through `memory_tracker` ([hle-status.md](hle-status.md)) |
+| 13 | The game splits four pieces off the placeholder with `VirtualFree` and `MEM_RELEASE \| MEM_PRESERVE_PLACEHOLDER`, carves five ranges for physical pages out of it (Leonida's stop 11), allocates 2,960 pages with attribute word `0x280`, and maps them. Device slot 133 is refused (Leonida's stop 12): the game unmaps its pages, frees the ranges, asserts at +0x19f4f58, and reads through the same null pointer | Next: slot 133, a buffer placed at the start of one of those ranges ("D3D12 device calls that differ from the PC", above) |
 
 From run 2 on, the game also asks `QueryApiImpl` for Game Runtime services we don't serve yet:
 XNetworkingImpl, XGameImpl, XSystemImpl, XSystemAnalyticsImpl, and services `af406016`,

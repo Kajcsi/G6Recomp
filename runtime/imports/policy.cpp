@@ -22,6 +22,7 @@
 #include "g6/imports/crt_paths.h"
 #include "g6/imports/d3d12_xs.h"
 #include "g6/imports/files.h"
+#include "g6/imports/memory.h"
 #include "g6/imports/registry.h"
 #include "g6/imports/xmem.h"
 #include "g6/input/game_input.h"
@@ -236,6 +237,11 @@ void add_core(ImportRegistry& imports) {
     imports.stub_dll("api-ms-win-core-registry-*",
                      {.value = ERROR_CALL_NOT_IMPLEMENTED, .last_error = std::nullopt});
     kernelbase::register_registry(imports);
+
+    // Memory: VirtualAlloc and VirtualFree go through memory_tracker, which has to see every
+    // range and placeholder the game makes (g6/imports/memory.h). The rest of the family stays
+    // stubbed until something imports it.
+    kernelbase::register_memory(imports);
 }
 
 // ---- Files ----

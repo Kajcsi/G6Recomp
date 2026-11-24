@@ -91,15 +91,21 @@ BOOL XMemGetWorkingSetStatistics(uint64_t attributes, XMemWorkingSetStatistics* 
 // budget to move between, so it succeeds and changes nothing.
 BOOL XMemTransferMemory(uint32_t direction, size_t size);
 
+// An allocation with the console's allocation type and protection, as XMemVirtualAlloc and the
+// console's VirtualAlloc make it. The page-size bits of `type` give the alignment: MEM_4MB_PAGES
+// 4 MiB, MEM_64K_PAGES 64 KiB, MEM_LARGE_PAGES alone 2 MiB. A reserve with MEM_PHYSICAL and no
+// MEM_COMMIT is a range for physical pages, which memory_tracker keeps as a placeholder; with
+// MEM_REPLACE_PLACEHOLDER it is carved out of an earlier placeholder. MEM_RESERVE_PLACEHOLDER
+// reserves a placeholder. Everything else is ordinary memory, allocated in place when it
+// replaces part of a placeholder. The PAGE_GRAPHICS_* bits of `protection` go to memory_tracker,
+// not to the host page. Type bits it doesn't know are logged once and ignored. Returns null with
+// the host's last error on failure.
+void* allocate_virtual(void* address, size_t size, uint32_t type, uint32_t protection);
+
 // The console's VirtualAlloc with an attribute word, as the executable calls it (docs/boot.md):
-// `address`, `size`, `type`, `attributes`, then `protection`. What the attribute word means is
-// unknown (the executable passes 3, 7, and 0x21); it is logged and ignored. The page-size bits
-// of `type` give the alignment: MEM_4MB_PAGES 4 MiB, MEM_64K_PAGES 64 KiB, MEM_LARGE_PAGES alone
-// 2 MiB. A reserve with MEM_PHYSICAL and no MEM_COMMIT is a range for physical pages, which
-// memory_tracker keeps as a placeholder; with MEM_REPLACE_PLACEHOLDER it is carved out of an
-// earlier placeholder. MEM_RESERVE_PLACEHOLDER reserves a placeholder. Everything else is
-// ordinary memory, allocated in place when it replaces part of a placeholder. The PAGE_GRAPHICS_*
-// bits of `protection` go to memory_tracker, not to the host page.
+// `address`, `size`, `type`, `attributes`, then `protection`, made by allocate_virtual. What the
+// attribute word means is unknown (the executable passes 3, 7, and 0x21); it is logged and
+// ignored.
 void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attributes,
                        uint32_t protection);
 

@@ -8,6 +8,7 @@ add_library(g6imports STATIC
     d3d12_xs/device.cpp
     d3d12_xs/virtual_memory.cpp
     kernelbase/files.cpp
+    kernelbase/memory.cpp
     kernelbase/registry.cpp
     ucrtbase/exit.cpp
     ucrtbase/paths.cpp

@@ -129,6 +129,58 @@ TEST_CASE("memory is allocated in place inside a placeholder and put back") {
     CHECK(!tracker.find(middle).has_value());
 }
 
+TEST_CASE("VirtualFree's placeholder forms keep the table in step with the host") {
+    MemoryTracker tracker;
+    void* base = tracker.reserve_placeholder(nullptr, 4 * k64K, k64K, false, {});
+    REQUIRE(base != nullptr);
+    const auto begin = reinterpret_cast<uintptr_t>(base);
+
+    // The title splits the placeholder itself, then replaces the piece with an allocation.
+    REQUIRE(tracker.free(at(begin + k64K), 2 * k64K, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) !=
+            FALSE);
+    CHECK_EQ(reinterpret_cast<uintptr_t>(query(begin + 2 * k64K).AllocationBase), begin + k64K);
+    auto info = tracker.find(at(begin + 2 * k64K));
+    REQUIRE(info.has_value());
+    CHECK_EQ(info->base, begin + k64K);
+    CHECK_EQ(info->size, 2 * k64K);
+    CHECK(info->placeholder);
+    void* block = tracker.allocate(at(begin + k64K), 2 * k64K, MEM_RESERVE | MEM_COMMIT,
+                                   PAGE_READWRITE, k64K, PAGE_GRAPHICS_READWRITE);
+    REQUIRE(block == at(begin + k64K));
+    static_cast<uint8_t*>(block)[0] = 1;
+
+    // Back into a placeholder, with the allocation's size, as Windows wants.
+    REQUIRE(tracker.free(block, 2 * k64K, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE);
+    CHECK_EQ(query(begin + k64K).State, DWORD{MEM_RESERVE});
+    info = tracker.find(block);
+    REQUIRE(info.has_value());
+    CHECK(info->placeholder);
+    CHECK_EQ(info->graphics, 0U);
+
+    // A join that isn't a run of placeholders fails as on Windows and changes nothing.
+    void* last = tracker.allocate(at(begin + 3 * k64K), k64K, MEM_RESERVE | MEM_COMMIT,
+                                  PAGE_READWRITE, k64K, 0);
+    REQUIRE(last == at(begin + 3 * k64K));
+    CHECK(tracker.free(base, 4 * k64K, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) == FALSE);
+    info = tracker.find(base);
+    REQUIRE(info.has_value());
+    CHECK_EQ(info->size, k64K);
+    REQUIRE(tracker.free(last, k64K, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE);
+
+    // Joining all of them gives one placeholder again.
+    REQUIRE(tracker.free(base, 4 * k64K, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) != FALSE);
+    CHECK_EQ(query(begin + 3 * k64K).AllocationBase, base);
+    info = tracker.find(at(begin + 3 * k64K));
+    REQUIRE(info.has_value());
+    CHECK_EQ(info->base, begin);
+    CHECK_EQ(info->size, 4 * k64K);
+    CHECK(info->placeholder);
+
+    CHECK(tracker.free(base, 0, MEM_RELEASE) != FALSE);
+    CHECK_EQ(query(begin).State, DWORD{MEM_FREE});
+    CHECK(!tracker.find(base).has_value());
+}
+
 TEST_CASE("physical ranges are carved out of a placeholder and stay placeholders") {
     MemoryTracker tracker;
     void* base = tracker.reserve_placeholder(nullptr, 8 * k64K, k64K, false, {});

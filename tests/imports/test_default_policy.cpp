@@ -14,6 +14,8 @@
 
 #include "g6/gdk/error.h"
 #include "g6/gdk/runtime.h"
+#include "g6/gpu/memory_tracker.h"
+#include "g6/imports/memory.h"
 #include "g6/imports/policy.h"
 #include "g6/imports/xmem.h"
 #include "g6test.h"
@@ -85,7 +87,7 @@ TEST_CASE("stubs in the default policy never look like success") {
         // Activation by file, D3D12.X, and a family nobody reviewed yet.
         {"api-ms-win-core-com-l1-1-0.dll", "CoGetInstanceFromFile", kNotImplemented, kNoError},
         {"d3d12_xs.dll", "D3D12CreateDevice", kNotImplemented, kNoError},
-        {"api-ms-win-core-memory-l1-1-0.dll", "VirtualAlloc", 0, kCallNotImplemented},
+        {"api-ms-win-core-memory-l1-1-0.dll", "VirtualProtect", 0, kCallNotImplemented},
     };
     for (const ExpectedStub& stub : expected) {
         const Resolution resolution = policy.resolve(stub.dll, Symbol::by_name(stub.name));
@@ -232,6 +234,62 @@ TEST_CASE("the xmem functions the executable calls first are HLE") {
         CHECK(resolution.binding == Binding::Hle);
         CHECK(resolution.address != nullptr);
     }
+}
+
+TEST_CASE("VirtualAlloc and VirtualFree go through memory_tracker") {
+    ImportRegistry policy = default_game_policy();
+    for (const char* dll :
+         {"api-ms-win-core-memory-l1-1-0.dll", "kernel32.dll", "kernelbase.dll"}) {
+        for (const char* name : {"VirtualAlloc", "VirtualFree"}) {
+            INFO(std::string(dll) + "!" + name);
+            const Resolution resolution = policy.resolve(dll, Symbol::by_name(name));
+            CHECK(resolution.binding == Binding::Hle);
+            CHECK(resolution.address != host_function(L"kernelbase.dll", name));
+        }
+        INFO(dll);
+        CHECK(policy.resolve(dll, Symbol::by_name("VirtualQueryEx")).binding == Binding::Forward);
+    }
+}
+
+TEST_CASE("the console's VirtualAlloc bits become GPU access in memory_tracker") {
+    namespace kernelbase = g6::imports::kernelbase;
+    const g6::gpu::MemoryTracker& tracker = g6::gpu::MemoryTracker::instance();
+    constexpr SIZE_T k64K = 64 * 1024;
+
+    // MEM_GRAPHICS and MEM_TITLE, which desktop Windows refuses, on an ordinary commit.
+    void* block = kernelbase::VirtualAlloc(
+        nullptr, k64K, MEM_RESERVE | MEM_COMMIT | kernelbase::kMemGraphics | kernelbase::kMemTitle,
+        PAGE_READWRITE);
+    REQUIRE(block != nullptr);
+    static_cast<uint8_t*>(block)[k64K - 1] = 1;
+    auto info = tracker.find(block);
+    REQUIRE(info.has_value());
+    CHECK_EQ(info->graphics, uint32_t{PAGE_GRAPHICS_READWRITE});
+    CHECK(kernelbase::VirtualFree(block, 0, MEM_RELEASE) != FALSE);
+    CHECK(!tracker.find(block).has_value());
+
+    // The title's own placeholder work: reserve one, split a piece off, allocate it in place,
+    // put it back, join the pieces, and release the whole.
+    void* base = kernelbase::VirtualAlloc(nullptr, 4 * k64K, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                                          PAGE_NOACCESS);
+    REQUIRE(base != nullptr);
+    auto* piece = static_cast<uint8_t*>(base) + k64K;
+    REQUIRE(kernelbase::VirtualFree(piece, k64K, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE);
+    REQUIRE(kernelbase::VirtualAlloc(piece, k64K,
+                                     MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                                     PAGE_READWRITE) == piece);
+    piece[0] = 1;
+    CHECK(kernelbase::VirtualFree(piece, k64K, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE);
+    CHECK(kernelbase::VirtualFree(base, 4 * k64K, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) !=
+          FALSE);
+    info = tracker.find(piece);
+    REQUIRE(info.has_value());
+    CHECK_EQ(info->base, reinterpret_cast<uintptr_t>(base));
+    CHECK_EQ(info->size, 4 * k64K);
+    CHECK(kernelbase::VirtualFree(base, 0, MEM_RELEASE) != FALSE);
+    MEMORY_BASIC_INFORMATION freed{};
+    VirtualQuery(base, &freed, sizeof(freed));
+    CHECK_EQ(freed.State, DWORD{MEM_FREE});
 }
 
 TEST_CASE("D3D12ConfigureVirtualMemoryX and D3D12XboxCreateDevice are HLE") {

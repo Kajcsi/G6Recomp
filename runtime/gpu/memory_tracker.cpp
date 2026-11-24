@@ -199,9 +199,62 @@ void* MemoryTracker::allocate(void* address, size_t size, DWORD type, DWORD prot
     return result;
 }
 
+BOOL MemoryTracker::preserve_placeholder(uintptr_t begin, size_t size, DWORD type) {
+    // Splitting: [begin, begin + size) becomes a placeholder of its own. Windows checks the
+    // boundaries.
+    if (size != 0) {
+        const auto holder = placeholder_holding(begin, begin + size);
+        if (holder != ranges_.end()) {
+            return split(holder, begin, begin + size) != ranges_.end() ? TRUE : FALSE;
+        }
+    }
+    // Putting an allocation or a mapped page back: its piece becomes a placeholder again.
+    const auto found = ranges_.find(begin);
+    if (found == ranges_.end() || found->second.placeholder) {
+        return VirtualFree(at(begin), size, type);
+    }
+    Range& piece = found->second;
+    if (piece.section != nullptr) {
+        return unmap_page(found) ? TRUE : FALSE;
+    }
+    if (VirtualFree(at(begin), size, type) == 0) {
+        return FALSE;
+    }
+    piece.placeholder = true;
+    piece.physical = false;
+    piece.graphics = 0;
+    piece.protection = 0;
+    return TRUE;
+}
+
+BOOL MemoryTracker::coalesce_placeholders(uintptr_t begin, size_t size, DWORD type) {
+    // Windows checks that the range is exactly a run of adjacent placeholders.
+    if (VirtualFree(at(begin), size, type) == 0) {
+        return FALSE;
+    }
+    const auto first = ranges_.find(begin);
+    if (first == ranges_.end()) {
+        return TRUE; // not the tracker's
+    }
+    Range joined = first->second;
+    joined.size = size;
+    joined.placeholder = true;
+    for (auto it = first; it != ranges_.end() && it->first < begin + size;) {
+        it = ranges_.erase(it);
+    }
+    ranges_[begin] = joined;
+    return TRUE;
+}
+
 BOOL MemoryTracker::free(void* address, size_t size, DWORD type) {
     const auto begin = reinterpret_cast<uintptr_t>(address);
     const std::scoped_lock lock(mutex_);
+    if ((type & MEM_RELEASE) != 0 && (type & MEM_COALESCE_PLACEHOLDERS) != 0) {
+        return coalesce_placeholders(begin, size, type);
+    }
+    if ((type & MEM_RELEASE) != 0 && (type & MEM_PRESERVE_PLACEHOLDER) != 0) {
+        return preserve_placeholder(begin, size, type);
+    }
     const auto found = ranges_.find(begin);
     if ((type & MEM_RELEASE) == 0 || found == ranges_.end()) {
         return VirtualFree(address, size, type);

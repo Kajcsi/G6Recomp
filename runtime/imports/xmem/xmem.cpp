@@ -180,14 +180,12 @@ BOOL XMemTransferMemory(uint32_t direction, size_t size) {
     return TRUE;
 }
 
-void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attributes,
-                       uint32_t protection) {
+void* allocate_virtual(void* address, size_t size, uint32_t type, uint32_t protection) {
     constexpr uint32_t kPageSizes = MEM_LARGE_PAGES | MEM_PHYSICAL | MEM_4MB_PAGES;
     constexpr uint32_t kKnown = MEM_COMMIT | MEM_RESERVE | MEM_REPLACE_PLACEHOLDER |
                                 MEM_RESERVE_PLACEHOLDER | MEM_TOP_DOWN | kPageSizes;
     if ((type & ~kKnown) != 0 && !g_reported_unknown_type.exchange(true)) {
-        LOG_WARN(xmem,
-                 "XMemVirtualAlloc: unknown allocation type bits {:#x} ignored (reported once)",
+        LOG_WARN(xmem, "unknown allocation type bits {:#x} ignored (reported once)",
                  type & ~kKnown);
     }
     const bool commit = (type & MEM_COMMIT) != 0;
@@ -211,6 +209,12 @@ void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attri
         result = tracker.allocate(address, size, type & (MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN),
                                   split.host, alignment, split.graphics);
     }
+    return result;
+}
+
+void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attributes,
+                       uint32_t protection) {
+    void* result = allocate_virtual(address, size, type, protection);
     if (result == nullptr) {
         LOG_WARN(xmem, "XMemVirtualAlloc({}, {:#x}, {:#x}, {:#x}, {:#x}) failed (error {})",
                  address, size, type, attributes, protection, GetLastError());
