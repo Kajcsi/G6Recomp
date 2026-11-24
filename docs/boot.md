@@ -125,9 +125,9 @@ logs stay in `private/runs/`.
 | 4 | `DStorageGetFactory` is unbound, and the game asserts (Leonida's stop 5). It called `IGameInput` slot 9 first and went on after the failure | A stand-in factory |
 | 5 | The factory's slot 8 (`SetStagingBufferSize`, 32 MiB) and slot 4 (`OpenFile`) fail; the game asserts after each, then crashes in `memset` with a null destination | The factory, files, queues and status arrays of [io.md](io.md), "DirectStorage" |
 | 6 | `XMemAllocatePhysicalPages` is unbound (Leonida's stop 6); after the assert the game reads through a null pointer | The physical-page functions (above) |
+| 7 | The first allocation, 11,360 pages with attribute word `0x280`, succeeds. Then `RegisterClassExA` (`ext-ms-win-rtcore-ntuser-window-ansi`) fails as a stub, the game asserts, and it reads through a null pointer at offset 0x18 | The window functions |
 
 From run 2 on, the game also asks `QueryApiImpl` for Game Runtime services we don't serve yet:
 XNetworkingImpl, XGameImpl, XSystemImpl, XSystemAnalyticsImpl, and services `af406016`,
 `f4faf4d4` and `03f0fe74`. It also asks XUserImpl for the class ID as an interface. Each miss is
-logged and reported through `XErrorReport`, and the game goes on. Run 6 also called
-`RegisterClassExA`, which is still a stub, before its stop.
+logged and reported through `XErrorReport`, and the game goes on.
