@@ -2,6 +2,7 @@
 // look like success, no networking, COM and WinRT activation never forwarded, the two replaced
 // side DLLs, and the forwards the side DLLs rely on.
 
+#include <array>
 #include <cstdint>
 #include <objbase.h>
 #include <optional>
@@ -248,6 +249,35 @@ TEST_CASE("the app-state notifications are the host's") {
         policy.resolve("api-ms-win-core-psm-appnotify-l1-1-0.dll",
                        Symbol::by_name("RegisterAppStateChangeNotification"));
     CHECK(resolution.binding == Binding::Forward);
+}
+
+TEST_CASE("the window and message functions are user32's") {
+    // The executable imports them from the ntuser extension API sets; they bind to user32 by name.
+    struct Expected {
+        const char* dll;
+        const char* name;
+    };
+    constexpr std::array expected = {
+        Expected{"ext-ms-win-rtcore-ntuser-window-ansi-l1-1-0.dll", "RegisterClassExA"},
+        Expected{"ext-ms-win-rtcore-ntuser-window-ansi-l1-1-0.dll", "CreateWindowExA"},
+        Expected{"ext-ms-win-rtcore-ntuser-window-ansi-l1-1-0.dll", "DefWindowProcA"},
+        Expected{"ext-ms-win-rtcore-ntuser-window-l1-1-0.dll", "ShowWindow"},
+        Expected{"ext-ms-win-rtcore-ntuser-message-ansi-l1-1-0.dll", "PeekMessageA"},
+        Expected{"ext-ms-win-rtcore-ntuser-message-ansi-l1-1-0.dll", "DispatchMessageA"},
+        Expected{"ext-ms-win-rtcore-ntuser-message-l1-1-0.dll", "TranslateMessage"},
+    };
+    ImportRegistry policy = default_game_policy();
+    for (const Expected& item : expected) {
+        INFO(std::string(item.dll) + "!" + item.name);
+        const Resolution resolution = policy.resolve(item.dll, Symbol::by_name(item.name));
+        CHECK(resolution.binding == Binding::Forward);
+        CHECK(resolution.address == host_function(L"user32.dll", item.name));
+    }
+    // Anything else from those sets is still unreviewed.
+    CHECK(
+        policy
+            .resolve("ext-ms-win-rtcore-ntuser-window-l1-1-0.dll", Symbol::by_name("DestroyWindow"))
+            .binding != Binding::Forward);
 }
 
 TEST_CASE("GameInputCreate is our stand-in, and the rest of GameInput an HRESULT stub") {

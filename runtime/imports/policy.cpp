@@ -304,6 +304,26 @@ void add_com(ImportRegistry& imports) {
     forward_each(imports, "oleaut32.dll", {"SysAllocStringLen", "SysFreeString"});
 }
 
+// ---- Windows and messages ----
+
+// The executable registers one window class, makes its window, and pumps its messages: seven
+// functions from the ntuser extension API sets, with the same contract as the host's user32. The
+// window procedure is guest code, which user32 calls directly like any other callback. They are
+// bound from user32 by name, since a host need not have the extension sets (Wine, for one).
+// Nothing else from those sets is imported, so the rest stays unreviewed and logged.
+void add_windows(ImportRegistry& imports) {
+    const auto from_user32 = [&](std::string_view dll, std::initializer_list<const char*> names) {
+        for (const char* name : names) {
+            imports.forward(dll, Symbol::by_name(name), "user32.dll");
+        }
+    };
+    from_user32("ext-ms-win-rtcore-ntuser-window-ansi-l1-*",
+                {"RegisterClassExA", "CreateWindowExA", "DefWindowProcA"});
+    from_user32("ext-ms-win-rtcore-ntuser-window-l1-*", {"ShowWindow"});
+    from_user32("ext-ms-win-rtcore-ntuser-message-ansi-l1-*", {"PeekMessageA", "DispatchMessageA"});
+    from_user32("ext-ms-win-rtcore-ntuser-message-l1-*", {"TranslateMessage"});
+}
+
 // ---- Console DLLs ----
 
 // The Game Runtime is runtime/gdk's, never the host's (hard rule 5): the entry points
@@ -372,6 +392,7 @@ loader::ImportRegistry default_game_policy() {
     add_core(imports);
     add_files(imports);
     add_com(imports);
+    add_windows(imports);
     add_console(imports);
     // Networking DLLs and API sets are offline in every registry (hard rule 5).
     return imports;
