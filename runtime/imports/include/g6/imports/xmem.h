@@ -111,6 +111,23 @@ void XMemFreeDefault(void* address, uint64_t attributes);
 // Whether the development kit's extra tools memory is there. A retail console has none.
 BOOL XMemIsToolsMemAvailable();
 
+// The console's physical pages (docs/boot.md, "Physical pages"), with the argument shapes
+// Leonida measured at the executable's call sites. memory_tracker does the work; these log.
+//
+// Allocates `*count` 64 KiB pages and writes their numbers to `pages`. The count is in and out:
+// every caller compares it with what it asked for and frees the pages on a mismatch. What the
+// attribute word means is unknown (the executable passes 0x280 and 0x380); each new one is
+// logged once and otherwise ignored.
+BOOL XMemAllocatePhysicalPages(uint64_t attributes, uint64_t* count, uint64_t* pages);
+// Frees pages. The callers unmap them first; a page still mapped keeps its memory until then.
+BOOL XMemFreePhysicalPages(uint64_t count, const uint64_t* pages);
+// Maps pages one after another from `address`, in a range XMemVirtualAlloc reserved for
+// physical pages, and returns `address`, or null on failure. A null `pages`, or a 0 entry,
+// unmaps.
+void* XMemMapPhysicalPages(void* address, uint64_t count, const uint64_t* pages);
+// Maps pages[i] at addresses[i]; a null `pages`, or a 0 entry, unmaps that address.
+BOOL XMemMapPhysicalPagesScatter(void* const* addresses, uint32_t count, const uint64_t* pages);
+
 // Binds xmem.dll's imports to the functions above.
 void register_xmem(loader::ImportRegistry& imports);
 

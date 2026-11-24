@@ -188,7 +188,10 @@ copied, its MIT notice goes with it and it gets a row in [NOTICES.md](../NOTICES
 
 ## Leonida
 
-<https://github.com/ItsNotRexed/Leonida>, GPL-3.0-or-later licence.
+<https://github.com/ubiquitarianism/leonida>, GPL-3.0-or-later licence. The original
+repository, github.com/ItsNotRexed/Leonida, was removed by its owner on 2026-11-23 (a 404, not
+a DMCA block). The repository above continues it with the full history: `dde82f27`, the last
+commit we reviewed on the original, is an ancestor of its `main`.
 
 Groundwork for running the same 1.0.2.1 package natively on Windows. It has Python analysis
 tools, a small C++ loader, and a translator from the console's RDNA 2 machine code to Vulkan
@@ -201,7 +204,10 @@ code can be ported with its notices kept. Little of it fits as it is, though: it
 Python and its translator emits SPIR-V. We take its measurements as facts, check them on our
 copy, and port code only where it fits our design.
 
-**Last reviewed: commit `dde82f27` (2026-11-23).** No code has been copied yet. Upstream's
+**Last reviewed: commit `dde82f27` (2026-11-23).** Code ported: the physical pages in
+`memory_tracker`, from `dde82f27`'s `runtime/shims/xmem.cpp` ([NOTICES.md](../NOTICES.md)).
+The continuation added about 1,100 commits after it by 2026-11-24 (`c023a365`), not reviewed
+yet. Upstream's
 `57c17539` reverts its console-ABI command-list proxy, import routing, and two console-ABI
 documents; the revert is for broken tests, so the facts from them below still stand.
 
@@ -328,7 +334,7 @@ documents; the revert is for broken tests, so the facts from them below still st
 | A NaN made on x86 or RDNA is 0xFFC00000 but 0x7FC00000 on ARM64 (`ea2cf301`); D3D12 can't `Sample` integer SRVs, so sampling integer formats goes through derivatives and a matching view (`64890ac2`) | Reported | [shaders.md](shaders.md) |
 | The executable calls `XMemTransferMemory` once at start with direction 1 and 16 MiB | Taken: ours succeeds and moves nothing | [hle-status.md](hle-status.md) |
 | A closed `XGameSave` container stays expired when its address is reused (`2cc83a80`) | Taken, our own code: our handles were object addresses, so a stale one could validate again. Handles are now values in reserved address space, never handed out twice, and each call holds the object it found (`test_game_save`) | [gdk.md](gdk.md), "XGameSave" |
-| The four physical-page functions, measured at the title's call sites: allocate `(attributes, count*, pages)` with a count of 64 KiB pages, in and out, freed by the caller on a mismatch; free `(count, pages)`; map `(address, count, pages)` returning the address, where a null array unmaps `count` pages and a 0 entry one page; scatter `(addresses, UINT32 count, pages)`. Page numbers are 4 KiB frame numbers, nonzero multiples of 16 below 2^25. One section per allocation, one view per page; a page takes its window's protection, and pages in `PAGE_NOACCESS` windows get read-write views (`042c5f37`) | Reported (measured). To port into `memory_tracker`: our run 6 stops at the first allocation | [boot.md](boot.md), "Physical pages" |
+| The four physical-page functions, measured at the title's call sites: allocate `(attributes, count*, pages)` with a count of 64 KiB pages, in and out, freed by the caller on a mismatch; free `(count, pages)`; map `(address, count, pages)` returning the address, where a null array unmaps `count` pages and a 0 entry one page; scatter `(addresses, UINT32 count, pages)`. Page numbers are 4 KiB frame numbers, nonzero multiples of 16 below 2^25. One section per allocation, one view per page; a page takes its window's protection, and pages in `PAGE_NOACCESS` windows get read-write views (`042c5f37`) | Ported into `memory_tracker` from `dde82f27`, with unit tests; the `VirtualAlloc` and `VirtualFree` side is still to do | [boot.md](boot.md), "Physical pages" |
 | The title releases its page windows with plain `VirtualFree`, which an xmem shim doesn't see (`042c5f37`, inferred from overlapping reservations) | Reported. Agrees with xcl's row. Our `VirtualFree` is a stub, and becomes HLE through `memory_tracker` | [hle-status.md](hle-status.md) |
 | `QueryApiImpl` classes: `37e56907` XNetworkingImpl, `973a344e` XGameImpl, `e349bd1a` XSystemImpl, `b884675d` XSystemAnalyticsImpl, `01acd177` XUserImpl, `8836fe87` XGameRuntimeFeatureImpl. Each class ID is also its base interface's ID, and one vtable answers every derived interface. XUserImpl's IDs run `01acd177`, `eb9bf948`, `1bf2f8c5`, `079415e3`, `26f3c674`, `5131d685` | Reported. Our runs ask for the first five and three classes Leonida doesn't serve (`af406016`, `f4faf4d4`, `03f0fe74`); we accept only `26f3c674` for XUser. Next for `runtime/gdk`, offline where it touches networking | [boot.md](boot.md), "Our runs" |
 | `DllMain` gets a non-null `lpvReserved` on process attach for modules loaded at start, and null for `LoadLibrary` loads (`e0816d6a`) | Reported (from Microsoft's documentation). Ours always passes null; a loader change with a fixture test, to do | [execution-model.md](execution-model.md) |
@@ -396,7 +402,8 @@ documents; the revert is for broken tests, so the facts from them below still st
 
 ### Next review
 
-1. Run `git log dde82f27..origin/main` in a scratch clone outside the repo.
+1. Run `git log dde82f27..origin/main` in a scratch clone of the continuation, outside the
+   repo.
 2. Read the diff of `docs/` and `README.md`.
 3. Add each new finding to the table above with its status here, check it when a design
    depends on it, and move the "last reviewed" commit.

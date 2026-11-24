@@ -12,6 +12,8 @@ and [docs/related-work.md](docs/related-work.md).
 
 | Path in this repo | Source project | Source commit | Source path | Licence |
 |---|---|---|---|---|
+| `runtime/gpu/memory_tracker.cpp` | [Leonida](https://github.com/ubiquitarianism/leonida) | `dde82f27` | `runtime/shims/xmem.cpp` | GPL-3.0-or-later |
+| `runtime/gpu/include/g6/gpu/memory_tracker.h` | [Leonida](https://github.com/ubiquitarianism/leonida) | `dde82f27` | `runtime/shims/xmem.cpp` | GPL-3.0-or-later |
 | `tools/shaderrecomp/src/rdna2.h` | [xbox-emulator](https://github.com/omonkeyz/xbox-emulator) | `51f5319` | `crates/tombox-xshader/src/rdna2.rs` | GPL-3.0-or-later |
 | `tools/shaderrecomp/src/rdna2.cpp` | [xbox-emulator](https://github.com/omonkeyz/xbox-emulator) | `51f5319` | `crates/tombox-xshader/src/rdna2.rs` | GPL-3.0-or-later |
 | `tools/shaderrecomp/src/rdna2_names.cpp` | [xbox-emulator](https://github.com/omonkeyz/xbox-emulator) | `51f5319` | `crates/tombox-xshader/src/rdna2/mnem.rs` | GPL-3.0-or-later |
@@ -19,7 +21,11 @@ and [docs/related-work.md](docs/related-work.md).
 | `tools/shaderrecomp/src/rdna2.cpp` | [TomBox](https://github.com/drycheetah84/TomBox), through xbox-emulator | `7e8064f` | `crates/tombox-xshader/src/rdna2.rs` | MIT OR Apache-2.0, used under MIT |
 | `tools/shaderrecomp/src/rdna2_names.cpp` | [TomBox](https://github.com/drycheetah84/TomBox), through xbox-emulator | `7e8064f` | `crates/tombox-xshader/src/rdna2/mnem.rs` | MIT OR Apache-2.0, used under MIT |
 
-Each file was ported from Rust to C++ and extended; its header lists what changed.
+Each xbox-emulator and TomBox file was ported from Rust to C++ and extended; its header lists
+what changed. The Leonida rows are its physical pages (sections, page numbers and per-page
+views), rewritten into `memory_tracker`'s range map. Leonida's original repository,
+github.com/ItsNotRexed/Leonida, was removed by its owner on 2026-11-23; the repository linked
+above continues it with the full history, and `dde82f27` is in both.
 
 xbox-emulator continues TomBox, and most of the two Rust files we ported are TomBox's code: 483
 of the 519 lines of `rdna2.rs` and 267 of the 410 lines of `rdna2/mnem.rs` are unchanged from

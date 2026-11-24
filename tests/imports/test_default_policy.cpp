@@ -223,7 +223,9 @@ TEST_CASE("the xmem functions the executable calls first are HLE") {
     ImportRegistry policy = default_game_policy();
     // docs/boot.md, "Our runs": each failure among these is a fatal assert.
     for (const char* name :
-         {"XMemVirtualAlloc", "XMemAllocDefault", "XMemFreeDefault", "XMemIsToolsMemAvailable"}) {
+         {"XMemVirtualAlloc", "XMemAllocDefault", "XMemFreeDefault", "XMemIsToolsMemAvailable",
+          "XMemAllocatePhysicalPages", "XMemFreePhysicalPages", "XMemMapPhysicalPages",
+          "XMemMapPhysicalPagesScatter"}) {
         INFO(name);
         const Resolution resolution = policy.resolve("xmem.dll", Symbol::by_name(name));
         CHECK(resolution.binding == Binding::Hle);

@@ -1,7 +1,7 @@
 // xmem.dll (docs/side-dlls.md, "xmem"). XMemAlloc gives heap memory only, for now: its graphics
 // and physical memory types fail honestly rather than hand out CPU memory the GPU can't see.
-// XMemVirtualAlloc goes through memory_tracker. The two queries answer from the host's own view
-// of memory.
+// XMemVirtualAlloc and the physical-page functions go through memory_tracker. The two queries
+// answer from the host's own view of memory.
 
 #include "g6/imports/xmem.h"
 
@@ -56,6 +56,24 @@ bool first_report(uint32_t memory_type) {
 
 std::atomic<bool> g_reported_foreign_free{false};
 std::atomic<bool> g_reported_unknown_type{false};
+
+// Attribute words XMemAllocatePhysicalPages has seen, logged once each: what they mean is
+// unknown, and every page is 64 KiB whatever they say.
+std::mutex g_physical_attributes_mutex;
+
+std::unordered_map<uint64_t, bool>& physical_attributes() {
+    static std::unordered_map<uint64_t, bool> seen;
+    return seen;
+}
+
+void note_physical_attributes(uint64_t attributes, uint64_t count) {
+    const std::scoped_lock lock(g_physical_attributes_mutex);
+    if (!physical_attributes().emplace(attributes, true).second) {
+        return;
+    }
+    LOG_INFO(xmem, "XMemAllocatePhysicalPages: first call with attributes {:#x} ({} pages)",
+             attributes, count);
+}
 
 } // namespace
 
@@ -184,11 +202,11 @@ void* XMemVirtualAlloc(void* address, size_t size, uint32_t type, uint64_t attri
     gpu::MemoryTracker& tracker = gpu::MemoryTracker::instance();
     void* result = nullptr;
     if ((type & MEM_RESERVE_PLACEHOLDER) != 0) {
-        result = tracker.reserve_placeholder(address, size, alignment, false, split.graphics);
+        result = tracker.reserve_placeholder(address, size, alignment, false, split);
     } else if ((type & MEM_PHYSICAL) != 0 && !commit) {
         result = (type & MEM_REPLACE_PLACEHOLDER) != 0
-                     ? tracker.carve_physical(address, size, split.graphics)
-                     : tracker.reserve_placeholder(address, size, alignment, true, split.graphics);
+                     ? tracker.carve_physical(address, size, split)
+                     : tracker.reserve_placeholder(address, size, alignment, true, split);
     } else {
         result = tracker.allocate(address, size, type & (MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN),
                                   split.host, alignment, split.graphics);
@@ -215,6 +233,48 @@ BOOL XMemIsToolsMemAvailable() {
     return FALSE;
 }
 
+BOOL XMemAllocatePhysicalPages(uint64_t attributes, uint64_t* count, uint64_t* pages) {
+    const uint64_t wanted = count != nullptr ? *count : 0;
+    note_physical_attributes(attributes, wanted);
+    if (gpu::MemoryTracker::instance().allocate_pages(count, pages) == FALSE) {
+        LOG_WARN(xmem, "XMemAllocatePhysicalPages({:#x}, {}) failed (error {})", attributes, wanted,
+                 GetLastError());
+        return FALSE;
+    }
+    LOG_DEBUG(xmem, "XMemAllocatePhysicalPages({:#x}, {}) -> first page {:#x}", attributes, wanted,
+              wanted != 0 ? pages[0] : 0);
+    return TRUE;
+}
+
+BOOL XMemFreePhysicalPages(uint64_t count, const uint64_t* pages) {
+    if (gpu::MemoryTracker::instance().free_pages(count, pages) == FALSE) {
+        LOG_WARN(xmem, "XMemFreePhysicalPages({}) failed (error {})", count, GetLastError());
+        return FALSE;
+    }
+    LOG_DEBUG(xmem, "XMemFreePhysicalPages({})", count);
+    return TRUE;
+}
+
+void* XMemMapPhysicalPages(void* address, uint64_t count, const uint64_t* pages) {
+    if (gpu::MemoryTracker::instance().map_pages(address, count, pages) == FALSE) {
+        LOG_WARN(xmem, "XMemMapPhysicalPages({}, {}, {}) failed (error {})", address, count,
+                 static_cast<const void*>(pages), GetLastError());
+        return nullptr;
+    }
+    LOG_DEBUG(xmem, "XMemMapPhysicalPages({}, {}, {})", address, count,
+              pages != nullptr ? "pages" : "unmap");
+    return address;
+}
+
+BOOL XMemMapPhysicalPagesScatter(void* const* addresses, uint32_t count, const uint64_t* pages) {
+    if (gpu::MemoryTracker::instance().map_pages_scatter(addresses, count, pages) == FALSE) {
+        LOG_WARN(xmem, "XMemMapPhysicalPagesScatter({}) failed (error {})", count, GetLastError());
+        return FALSE;
+    }
+    LOG_DEBUG(xmem, "XMemMapPhysicalPagesScatter({})", count);
+    return TRUE;
+}
+
 void register_xmem(loader::ImportRegistry& imports) {
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemAlloc"),
                 reinterpret_cast<const void*>(&XMemAlloc));
@@ -234,6 +294,14 @@ void register_xmem(loader::ImportRegistry& imports) {
                 reinterpret_cast<const void*>(&XMemFreeDefault));
     imports.hle("xmem.dll", loader::Symbol::by_name("XMemIsToolsMemAvailable"),
                 reinterpret_cast<const void*>(&XMemIsToolsMemAvailable));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemAllocatePhysicalPages"),
+                reinterpret_cast<const void*>(&XMemAllocatePhysicalPages));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemFreePhysicalPages"),
+                reinterpret_cast<const void*>(&XMemFreePhysicalPages));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemMapPhysicalPages"),
+                reinterpret_cast<const void*>(&XMemMapPhysicalPages));
+    imports.hle("xmem.dll", loader::Symbol::by_name("XMemMapPhysicalPagesScatter"),
+                reinterpret_cast<const void*>(&XMemMapPhysicalPagesScatter));
 }
 
 } // namespace g6::imports::xmem

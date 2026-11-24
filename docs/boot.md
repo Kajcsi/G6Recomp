@@ -22,7 +22,7 @@ problems, not all of them. Most of Leonida's fixes are local stand-ins, tested o
 | 3 | The Game Runtime's import thunks treat a missing `XErrorReport` as fatal | Providing it | Done: our `xgameruntime.dll` has it ([gdk.md](gdk.md)) |
 | 4 | The game's allocator reads its static TLS from module index 0 (it is built with `/GA`) | Giving the executable index 0 | Done: the runner links `g6exetls` ([execution-model.md](execution-model.md), "TLS and the TEB") |
 | 5 | A fatal assert when `DStorageGetFactory` returns null | A DirectStorage factory | Done: `runtime/io` serves the factory, files, queues and status arrays ([io.md](io.md), "DirectStorage") |
-| 6 | `XMemAllocatePhysicalPages` is missing, and the game asserts when it returns FALSE | A CPU-only stand-in (below) | Next: our run 6 stops here too |
+| 6 | `XMemAllocatePhysicalPages` is missing, and the game asserts when it returns FALSE | A CPU-only stand-in (below) | Done: `memory_tracker` backs the pages (below) |
 | 7 | `D3D12XboxCreateDevice` succeeds, then device slot 26 is called with the return buffer first | Swapping the first two arguments (below) | M3: `runtime/gpu` |
 | 8 | Device slot 48 is forwarded to the PC's slot 48, which is something else | Creating a command queue (below) | M3 |
 | 9 | Device slot 73 is forwarded to the PC's slot 73, and the game then reads through a null list | Creating a command list (below) | M3 |
@@ -72,8 +72,21 @@ Later findings change the backing ([related-work.md](related-work.md)):
   placeholders itself with `VirtualAlloc` and `VirtualFree` (xcl). Those imports have to go
   through `memory_tracker` too, and the first placeholder has to lie below 4 GiB.
 
-That is the plan here, with the sections and the page table owned by `memory_tracker` so the
-GPU side can follow at M3.
+`memory_tracker` now does the first three of these, ported from Leonida (`dde82f27`,
+`runtime/shims/xmem.cpp`; [NOTICES.md](../NOTICES.md)):
+
+* Each allocation call gets one pagefile-backed section of its pages. Page numbers are 4 KiB
+  frame numbers, 16 per page, and the number of a freed page is handed out again.
+* A map splits a 64 KiB piece out of the range's placeholder and maps the page's 64 KiB of the
+  section there as its own view, so a page keeps its contents across remaps and can be mapped at
+  two addresses. A view takes its range's protection, or read-write where the range has none or
+  `PAGE_NOACCESS`. An unmap turns the piece back into a placeholder.
+* A page freed while mapped keeps its memory until its views go, and releasing a whole range
+  unmaps its views.
+
+Maps work only in ranges reserved for physical pages, at 64 KiB addresses. The fourth point, the
+`VirtualAlloc` and `VirtualFree` imports and the first placeholder below 4 GiB, is still to do.
+The sections and the page table belong to `memory_tracker`, so the GPU side can follow at M3.
 
 ### D3D12 device calls that differ from the PC
 

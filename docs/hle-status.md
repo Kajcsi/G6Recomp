@@ -167,7 +167,7 @@ follow SlimEra's public reference ([related-work.md](related-work.md)).
 | `XMemVirtualAlloc` | partial | `(address, size, type, attributes, protection)`, through `memory_tracker`, in the forms the executable calls first ([boot.md](boot.md)). The page-size bits of `type` give the alignment. A physical reserve without commit stays a placeholder for page maps, `MEM_RESERVE_PLACEHOLDER` reserves one, and `MEM_REPLACE_PLACEHOLDER` carves the range out of an earlier one. The `PAGE_GRAPHICS_*` bits of `protection` are recorded for the GPU side and left off the host page. The attribute word (3, 7, and 0x21 seen) is logged and ignored. |
 | `XMemAllocDefault`, `XMemFreeDefault` | implemented | The same as `XMemAlloc` and `XMemFree`: the default allocator behind the allocation hooks, and we install none. |
 | `XMemIsToolsMemAvailable` | implemented | FALSE, as on a retail console. |
-| `XMemAllocatePhysicalPages`, `XMemFreePhysicalPages`, `XMemMapPhysicalPages`, `XMemMapPhysicalPagesScatter` | stubbed | FALSE or null, logged once. Our run 6 stops here ([boot.md](boot.md), "Physical pages"). |
+| `XMemAllocatePhysicalPages`, `XMemFreePhysicalPages`, `XMemMapPhysicalPages`, `XMemMapPhysicalPagesScatter` | implemented | Through `memory_tracker`, CPU side only: one pagefile-backed section per allocation call, one 64 KiB view per mapped page, numbers in 4 KiB frames ([boot.md](boot.md), "Physical pages"). Each new attribute word (`0x280` and `0x380` seen) is logged once and otherwise ignored. Map returns the address and scatter TRUE; a failure is logged with the host error. |
 
 Only the BVH builder, which is replaced, imports `XMemVirtualQuery`. **Checked here:** the
 executable imports 12 xmem functions: `XMemAlloc`, `XMemFree`, `XMemGetWorkingSetStatistics`
